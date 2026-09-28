@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, remote, user_prefs
+from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, playlist_import, remote, user_prefs
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
     db.init()
     apply_runtime_settings()
     scanner.listeners.append(invalidate_library_index)
+    scanner.listeners.append(lambda _st: playlist_import.sync_jobs())  # geholte Songs in importierte Playlists
     scanner.listeners.append(lambda _status: analyzer.kick())
     downloads.start()
     scheduler.start()
@@ -507,6 +508,15 @@ class PlaylistIn(BaseModel):
 class PlaylistPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    public: bool | None = None  # veröffentlichen = für alle Homify-Benutzer sichtbar
+
+
+class PlaylistGenerate(BaseModel):
+    source: str = Field(pattern="^(song|artist|genre|decade|top|liked|new|rediscover|random)$")
+    value: str = Field(default="", max_length=300)
+    count: int = Field(default=50, ge=5, le=500)
+    name: str = Field(default="", max_length=200)
+    public: bool = False
 
 
 class PlaylistOrder(BaseModel):
@@ -544,17 +554,60 @@ def playlists(user: dict = Depends(auth.current_user)):
     return library.user_playlists(user["id"])
 
 
-@app.post("/api/playlists")
-def create_playlist(body: PlaylistIn, user: dict = Depends(auth.current_user)):
+def _new_playlist(user_id: int, name: str, description: str = "", track_ids: list[str] | None = None,
+                  public: bool = False) -> int:
     now = time.time()
     cur = db.execute(
-        "INSERT INTO playlists (user_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user["id"], body.name.strip(), body.description.strip(), now, now),
+        "INSERT INTO playlists (user_id, name, description, public, published_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, name.strip(), description.strip(), int(public), now if public else None, now, now),
     )
     pid = int(cur.lastrowid)
-    if body.track_ids:
-        _append_tracks(pid, body.track_ids[:5000])
-    return library.playlist_summary(pid)
+    if track_ids:
+        _append_tracks(pid, track_ids[:5000])
+    return pid
+
+
+@app.post("/api/playlists")
+def create_playlist(body: PlaylistIn, user: dict = Depends(auth.current_user)):
+    pid = _new_playlist(user["id"], body.name, body.description, body.track_ids)
+    return library.playlist_summary(pid, user["id"])
+
+
+@app.get("/api/playlists/public")
+def shared_playlists(user: dict = Depends(auth.current_user)):
+    """Von anderen Benutzern veröffentlichte Playlists."""
+    return library.public_playlists(user["id"])
+
+
+@app.get("/api/playlists/generator")
+def playlist_generator_options(user: dict = Depends(auth.current_user)):
+    return library.generator_options(user["id"])
+
+
+@app.post("/api/playlists/generate")
+def generate_playlist(body: PlaylistGenerate, user: dict = Depends(auth.current_user)):
+    """Playlist automatisch zusammenstellen (ähnlich wie ein Song/Künstler, Genre, Jahrzehnt, Top-Songs …)."""
+    ids, suggested = library.generate_playlist_tracks(body.source, body.value, user["id"], body.count)
+    if not ids:
+        raise HTTPException(400, "Dafür gibt es (noch) keine passenden Songs.")
+    desc = f"Automatisch zusammengestellt am {time.strftime('%d.%m.%Y')}"
+    pid = _new_playlist(user["id"], body.name.strip() or suggested, desc, ids, body.public)
+    return library.playlist_summary(pid, user["id"])
+
+
+class PlaylistImport(BaseModel):
+    url: str = Field(pattern=r"^https://open\.spotify\.com/", max_length=500)
+    title: str = Field(default="", max_length=200)
+    spotify_ids: list[str] = Field(min_length=1, max_length=5000)
+    library_ids: dict[str, str] = Field(default_factory=dict)
+
+
+@app.post("/api/playlists/import")
+def import_spotify_playlist(body: PlaylistImport, user: dict = Depends(auth.current_user)):
+    """Spotify-Playlist mit den vorhandenen Songs als Homify-Playlist speichern (ohne Download)."""
+    pid = playlist_import.import_link(user["id"], body.url, body.title, body.spotify_ids, body.library_ids)
+    return library.playlist_summary(pid, user["id"])
 
 
 @app.get("/api/playlists/{playlist_id}")
@@ -567,14 +620,51 @@ def playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
 
 @app.patch("/api/playlists/{playlist_id}")
 def update_playlist(playlist_id: int, body: PlaylistPatch, user: dict = Depends(auth.current_user)):
-    _own_playlist(playlist_id, user)
+    row = _own_playlist(playlist_id, user)
+    if body.public is not None and bool(row["public"]) != body.public:
+        db.execute("UPDATE playlists SET public = ?, published_at = ? WHERE id = ?",
+                   (int(body.public), time.time() if body.public else None, playlist_id))
     if body.name is not None:
         db.execute("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?",
                    (body.name.strip(), time.time(), playlist_id))
     if body.description is not None:
         db.execute("UPDATE playlists SET description = ?, updated_at = ? WHERE id = ?",
                    (body.description.strip(), time.time(), playlist_id))
-    return library.playlist_summary(playlist_id)
+    return library.playlist_summary(playlist_id, user["id"])
+
+
+def _public_playlist(playlist_id: int, user: dict) -> dict[str, Any]:
+    row = db.query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+    if not row or (row["user_id"] != user["id"] and not row["public"]):
+        raise HTTPException(404, "Playlist nicht gefunden")
+    return row
+
+
+@app.put("/api/playlists/{playlist_id}/follow")
+def follow_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    row = _public_playlist(playlist_id, user)
+    if row["user_id"] == user["id"]:
+        raise HTTPException(400, "Das ist deine eigene Playlist.")
+    db.execute("INSERT OR IGNORE INTO playlist_follows (user_id, playlist_id, followed_at) VALUES (?, ?, ?)",
+               (user["id"], playlist_id, time.time()))
+    return library.playlist_summary(playlist_id, user["id"])
+
+
+@app.delete("/api/playlists/{playlist_id}/follow")
+def unfollow_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    db.execute("DELETE FROM playlist_follows WHERE user_id = ? AND playlist_id = ?", (user["id"], playlist_id))
+    return {"ok": True}
+
+
+@app.post("/api/playlists/{playlist_id}/copy")
+def copy_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    """Veröffentlichte (oder eigene) Playlist als eigene, bearbeitbare Kopie übernehmen."""
+    row = _public_playlist(playlist_id, user)
+    ids = [r["track_id"] for r in db.query(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id", (playlist_id,))]
+    name = row["name"] if row["user_id"] != user["id"] else f"{row['name']} (Kopie)"
+    pid = _new_playlist(user["id"], name, row["description"], ids)
+    return library.playlist_summary(pid, user["id"])
 
 
 @app.delete("/api/playlists/{playlist_id}")
@@ -627,10 +717,12 @@ class DownloadIn(BaseModel):
     image: str = ""
     spotify_ids: list[str] = Field(default_factory=list, max_length=5000)
     total: int = 0
+    library_ids: dict[str, str] = Field(default_factory=dict)  # Spotify-ID -> Song, der schon da ist
 
 
 @app.get("/api/downloads")
 def list_downloads(user: dict = Depends(auth.current_user)):
+    playlist_import.sync_jobs(scanning=bool(scanner.status.get("running")))
     jobs = downloads.list()
     # Fertige Songs gleich mitliefern, damit man sie direkt abspielen kann
     for job in jobs:
@@ -644,6 +736,8 @@ def list_downloads(user: dict = Depends(auth.current_user)):
             job["track_ids"] = list(dict.fromkeys([r["id"] for r in rows] + known))
             if job["track_ids"] and not job.get("auto_liked") and not scanner.status.get("running"):
                 _auto_like(job)
+        if job["kind"] == "playlist":
+            job["playlist_id"] = playlist_import.playlist_for(user["id"], job["query"])
         if not user["is_admin"] and job.get("user_id") != user["id"]:
             job.pop("log", None)
     return {"jobs": jobs, "active": downloads.active_count(), "scan": scanner.status}
@@ -665,7 +759,7 @@ def _auto_like(job: dict[str, Any]) -> None:
 @app.post("/api/downloads")
 def add_download(body: DownloadIn, user: dict = Depends(auth.download_user)):
     return downloads.add(user["id"], body.query, body.kind, body.title, body.subtitle, body.image,
-                         body.spotify_ids, body.total)
+                         body.spotify_ids, body.total, body.library_ids)
 
 
 @app.post("/api/downloads/{job_id}/cancel")

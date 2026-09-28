@@ -1,10 +1,10 @@
 // Suche: eigene Bibliothek + Spotify-Vorschläge zum Holen per spotDL
 
-import { api, ApiError, state } from "./api.js";
+import { api, ApiError, loadPlaylists, state } from "./api.js";
 import { albumCard, artistCard, navigate, playlistCard, playButton, playAlbum, playArtist, shelf, trackList } from "./components.js";
 import { downloadButton, playTrackIds } from "./downloads.js";
 import { player } from "./player.js";
-import { clear, colorFor, cover, debounce, fmtTime, h, icon, plural, remoteCover } from "./ui.js";
+import { clear, colorFor, cover, debounce, fmtTime, h, icon, plural, remoteCover, toast } from "./ui.js";
 import { setting } from "./usersettings.js";
 
 const LINK = /(open\.spotify\.com|spotify\.link|youtube\.com|youtu\.be)\//i;
@@ -216,8 +216,19 @@ function renderSpotify(box, res, q) {
     const allItem = {
       query: it.url, kind: it.kind === "youtube" || it.kind === "link" ? "track" : it.kind, title: it.title, subtitle: it.subtitle,
       image: it.image, spotify_ids: it.tracks.map((t) => t.id), total: it.kind === "artist" ? 0 : it.tracks.length,
+      library_ids: Object.fromEntries(it.tracks.filter((t) => t.library_id).map((t) => [t.id, t.library_id])),
     };
     const inLib = it.tracks.length - missing.length;
+    // Spotify-Playlist: gleich als Homify-Playlist speichern (vorhandene Songs, Original-Reihenfolge)
+    const isPlaylist = it.kind === "playlist" && it.tracks.length;
+    const saveAsPlaylist = isPlaylist && inLib ? h("button", { class: `btn btn-small ${missing.length ? "btn-outline" : "btn-primary"}`, onclick: async () => {
+      try {
+        const p = await api("/playlists/import", { method: "POST", body: { url: it.url, title: it.title, spotify_ids: allItem.spotify_ids, library_ids: allItem.library_ids } });
+        await loadPlaylists();
+        toast(`„${p.name}“ gespeichert – ${plural(p.track_count, "Song", "Songs")}`);
+        navigate(`#/playlist/${p.id}`);
+      } catch (e) { toast(e.message, { error: true }); }
+    } }, icon("plus", "sm"), missing.length ? "Nur vorhandene als Playlist speichern" : "Als Playlist speichern") : null;
     content.append(spotifyHead("Spotify-Link"),
       h("div", { class: "sp-link-head" }, remoteCover(it.image),
         h("div", { style: { minWidth: 0 } },
@@ -231,7 +242,10 @@ function renderSpotify(box, res, q) {
               : missing.length || !it.tracks.length
                 ? downloadButton(allItem, { label: it.kind === "artist" ? "Alle Songs des Künstlers holen" : it.tracks.length ? `Alle ${missing.length} fehlenden holen` : "Holen", big: true })
                 : h("span", { class: "badge green" }, icon("check", "sm"), "Alles schon da"),
-            inLib ? h("button", { class: "btn btn-small btn-outline", onclick: () => playTrackIds(it.tracks.map((t) => t.library_id).filter(Boolean)) }, icon("play", "sm"), "Vorhandene abspielen") : null))));
+            saveAsPlaylist,
+            inLib ? h("button", { class: "btn btn-small btn-outline", onclick: () => playTrackIds(it.tracks.map((t) => t.library_id).filter(Boolean)) }, icon("play", "sm"), "Vorhandene abspielen") : null),
+          isPlaylist && missing.length ? h("p", { class: "muted", style: { fontSize: "12px", margin: "8px 0 0" } },
+            "Beim Holen entsteht die Playlist auch in Homify: vorhandene Songs sind sofort drin, die fehlenden kommen nach dem Download dazu.") : null)));
     if (it.kind !== "track") {
       const list = h("div");
       for (const t of it.tracks.slice(0, 300)) list.append(spotifyTrackRow(t));

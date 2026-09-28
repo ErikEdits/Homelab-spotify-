@@ -703,3 +703,16 @@ svg.icon { width: 24px; height: 24px; display: block; flex: none; }
 .dup-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
 .cookie-box { background: var(--elev-2); border-radius: 8px; padding: 14px 16px; margin: 4px 0 12px; }
 .cookie-box .help { margin-bottom: 0; }
+
+/* ------------------------------------------------------------------ Playlist zusammenstellen */
+.gen-sources { display: flex; flex-wrap: wrap; gap: 6px; }
+.gen-chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 999px; background: var(--elev-3); font-size: 13px; }
+.gen-chip:hover { background: var(--active); }
+.gen-chip.active { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.gen-chip svg.icon { width: 16px; height: 16px; }
+.gen-detail { margin-top: 4px; }
+.gen-results { display: grid; gap: 2px; margin: 6px 0; max-height: 240px; overflow: auto; }
+.gen-results .list-row { width: 100%; }
+.gen-dialog .range input[type="range"] { flex: 1; width: auto; }
+.gen-dialog .range .range-value { min-width: 70px; }
+.follow-btn.following { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); }

@@ -2,6 +2,7 @@
 
 import { api, emit, isLiked, loadPlaylists, on, setLiked, state } from "./api.js";
 import { player } from "./player.js";
+import { generatePlaylistDialog } from "./playlistgen.js";
 import {
   confirmDialog, cover, fmtDate, fmtTime, h, icon, modal, mosaic, openMenu, plural, prompt, toast,
 } from "./ui.js";
@@ -58,7 +59,7 @@ export async function addToPlaylistDialog(tracks) {
   const newBtn = h("button", { class: "list-row", type: "button", onclick: () => resolveChoice("new") },
     h("div", { class: "cover" }, icon("plus")), h("strong", {}, "Neue Playlist"));
   list.append(newBtn);
-  for (const p of state.playlists) {
+  for (const p of state.playlists.filter((x) => x.own !== false)) {  // nur eigene – fremde sind nicht bearbeitbar
     list.append(h("button", { class: "list-row", type: "button", onclick: () => resolveChoice(p) },
       mosaic(p.covers, { size: 96 }),
       h("div", { style: { textAlign: "left", minWidth: 0 } }, h("div", { class: "ellipsis" }, p.name),
@@ -102,6 +103,7 @@ export function trackMenu(event, track, { playlistId = null, entryId = null, onR
     } } : null,
     "sep",
     { label: "Song-Radio starten", icon: "radio", action: () => navigate(`#/mix/radio/${encodeURIComponent(track.id)}`) },
+    { label: "Playlist aus diesem Song zusammenstellen", icon: "sparkle", action: () => generatePlaylistDialog({ source: "song", value: track.id, label: track.title }) },
     track.artists?.[0]?.id ? { label: "Zum Künstler", icon: "person", action: () => navigate(`#/artist/${track.artists[0].id}`) } : null,
     track.album_id ? { label: "Zum Album", icon: "album", action: () => navigate(`#/album/${track.album_id}`) } : null,
     "sep",
@@ -284,9 +286,14 @@ export function artistCard(a) {
   });
 }
 
+export function playlistSubtitle(p) {
+  if (p.own === false) return `Von ${p.owner} · ${plural(p.track_count, "Song", "Songs")}`;
+  return `${p.public ? "Veröffentlicht · " : ""}${plural(p.track_count, "Song", "Songs")}`;
+}
+
 export function playlistCard(p) {
   return card({
-    title: p.name, subtitle: p.description || plural(p.track_count, "Song", "Songs"),
+    title: p.name, subtitle: p.own === false || p.public ? playlistSubtitle(p) : p.description || playlistSubtitle(p),
     coverEl: mosaic(p.covers, { size: 300 }), href: `#/playlist/${p.id}`,
     onPlay: () => playPlaylist(p.id).catch((e) => toast(e.message, { error: true })),
   });

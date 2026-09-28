@@ -47,6 +47,18 @@ in deine Bibliothek.
 - **Fehlt ein Song? Holen!** Name oder Spotify-Link (Song, Album, Playlist, Künstler) eingeben,
   Homify zeigt die Treffer, markiert, was du schon hast, und holt den Rest mit einem Klick.
 - **Mehrere Benutzer** mit eigenen Playlists, Lieblingssongs und Verlauf.
+- **Playlist zusammenstellen** (Knopf in der Bibliothek, beim „+“ in der Seitenleiste, im Menü eines Songs
+  und auf Künstlerseiten): Homify baut eine Playlist ähnlich wie ein Song oder Künstler, nach Genre,
+  Jahrzehnt, aus deinen Top-Songs, Lieblingssongs, neuen Songs, „Wiederentdecken“ oder zufällig –
+  mit Wunschlänge und Namen.
+- **Spotify-Playlists übernehmen**: Holst du einen Spotify-Playlist-Link, entsteht dieselbe Playlist auch in
+  Homify – in der Original-Reihenfolge. Vorhandene Songs sind sofort drin, frisch geholte kommen nach dem
+  Download automatisch dazu (auch wenn du einzelne Songs daraus holst). Ist schon alles da, speichert
+  „Als Playlist speichern“ sie mit einem Klick. Denselben Link später nochmal holen ergänzt die Playlist.
+- **Playlists veröffentlichen**: Ein Knopf in der Playlist macht sie für alle Homify-Benutzer sichtbar
+  („Von anderen geteilt“ auf Startseite und in der Bibliothek). Die anderen können sie hören, ihr folgen
+  oder als eigene Playlist kopieren – bearbeiten kann sie nur der Besitzer. Ein zweiter Klick macht sie
+  wieder privat.
 - **Jeder Song nur einmal**: Alle Benutzer dürfen Songs holen – Homify prüft vorher und nachher, ob es
   den Song schon gibt (gleicher Titel, Hauptinterpret und Länge; „Remastered“ oder „feat.“ zählen nicht,
   „Remix“ oder „Live“ schon). Vorhandene Songs werden nicht nochmal geladen. Liegt ein Song doch doppelt

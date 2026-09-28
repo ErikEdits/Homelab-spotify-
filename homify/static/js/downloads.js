@@ -1,6 +1,6 @@
 // Downloads über spotDL: Warteschlange, Status-Abfrage, Download-Seite
 
-import { api, emit, on, state } from "./api.js";
+import { api, emit, loadPlaylists, on, state } from "./api.js";
 import { navigate } from "./components.js";
 import { player } from "./player.js";
 import { clear, confirmDialog, cover, fmtDate, h, icon, remoteCover, toast } from "./ui.js";
@@ -23,6 +23,7 @@ export async function refreshDownloads() {
         // „Schon in deiner Bibliothek“: nichts wurde doppelt gespeichert
         toast(/^(Schon|Alle \d+ Songs sind schon)/.test(job.message || "") ? `„${job.title}“: ${job.message}` : `„${job.title}“ ist jetzt in deiner Bibliothek`);
         emit("library-changed");
+        if (job.kind === "playlist") setTimeout(() => loadPlaylists().catch(() => {}), 3000);  // importierte Playlist ergänzt
       } else if (prev && prev !== job.status && job.status === "error") {
         toast(`Download fehlgeschlagen: ${job.title}`, { error: true });
       }
@@ -40,14 +41,17 @@ function schedule() {
   timer = setTimeout(refreshDownloads, fast ? 2000 : 30000);
 }
 
-export async function startDownload({ query, kind = "track", title = "", subtitle = "", image = "", spotify_ids = [], total = 0 }) {
+export async function startDownload({ query, kind = "track", title = "", subtitle = "", image = "", spotify_ids = [], total = 0, library_ids = {} }) {
   if (state.user && !state.user.can_download) {
     toast("Du darfst leider nichts herunterladen – frag den Admin.", { error: true });
     return null;
   }
   try {
-    const job = await api("/downloads", { method: "POST", body: { query, kind, title, subtitle, image, spotify_ids, total } });
-    toast(`„${title || query}“ wird geholt …`);
+    const job = await api("/downloads", { method: "POST", body: { query, kind, title, subtitle, image, spotify_ids, total, library_ids } });
+    if (kind === "playlist") {
+      await loadPlaylists().catch(() => {});
+      toast(`„${title || query}“ wird geholt – die Playlist steht schon in deiner Bibliothek`);
+    } else toast(`„${title || query}“ wird geholt …`);
     fastUntil = Date.now() + 15000;
     await refreshDownloads();
     return job;
@@ -137,6 +141,9 @@ export async function downloadsView() {
       const running = job.status === "running";
       const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
       const actions = h("div", { class: "dl-actions" });
+      if (job.playlist_id) {
+        actions.append(h("a", { class: "btn btn-small btn-outline", href: `#/playlist/${job.playlist_id}` }, icon("list", "sm"), "Zur Playlist"));
+      }
       if (job.track_ids?.length) {
         actions.append(h("button", { class: "btn btn-small btn-primary", onclick: () => playTrackIds(job.track_ids, { type: "download", name: job.title }) }, icon("play", "sm"), "Abspielen"));
       }

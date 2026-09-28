@@ -136,8 +136,20 @@ CREATE TABLE IF NOT EXISTS playlists (
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    public      INTEGER NOT NULL DEFAULT 0,
+    published_at REAL,
+    source_url  TEXT NOT NULL DEFAULT '',
+    source_ids  TEXT NOT NULL DEFAULT '[]',
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
+);
+
+-- Veröffentlichte Playlists anderer Benutzer, denen man folgt
+CREATE TABLE IF NOT EXISTS playlist_follows (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    followed_at REAL NOT NULL,
+    PRIMARY KEY (user_id, playlist_id)
 );
 
 CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -183,6 +195,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     attempts    INTEGER NOT NULL DEFAULT 0,
     auto_liked  INTEGER NOT NULL DEFAULT 0,
     known_ids   TEXT NOT NULL DEFAULT '[]',
+    known_map   TEXT NOT NULL DEFAULT '{}',
+    playlist_synced INTEGER NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL,
     started_at  REAL,
     finished_at REAL
@@ -218,8 +232,11 @@ def init() -> None:
     added = {
         "tracks": [("rel", "TEXT NOT NULL DEFAULT ''"), ("gain", "REAL"), ("album_gain", "REAL"),
                    ("dkey", "TEXT NOT NULL DEFAULT ''")],
+        "playlists": [("public", "INTEGER NOT NULL DEFAULT 0"), ("published_at", "REAL"),
+                      ("source_url", "TEXT NOT NULL DEFAULT ''"), ("source_ids", "TEXT NOT NULL DEFAULT '[]'")],
         "downloads": [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("auto_liked", "INTEGER NOT NULL DEFAULT 0"),
-                      ("known_ids", "TEXT NOT NULL DEFAULT '[]'")],
+                      ("known_ids", "TEXT NOT NULL DEFAULT '[]'"), ("known_map", "TEXT NOT NULL DEFAULT '{}'"),
+                      ("playlist_synced", "INTEGER NOT NULL DEFAULT 0")],
     }
     for table, cols in added.items():
         existing = {row[1] for row in c.execute(f"PRAGMA table_info({table})")}
