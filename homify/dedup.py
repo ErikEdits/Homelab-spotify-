@@ -78,6 +78,7 @@ def remap(c, old_id: str, new_id: str) -> None:
     c.execute("DELETE FROM likes WHERE track_id = ?", (old_id,))
     c.execute("UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?", (new_id, old_id))
     c.execute("UPDATE plays SET track_id = ? WHERE track_id = ?", (new_id, old_id))
+    c.execute("UPDATE skips SET track_id = ? WHERE track_id = ?", (new_id, old_id))
     c.execute("UPDATE duplicates SET track_id = ? WHERE track_id = ?", (new_id, old_id))
 
 

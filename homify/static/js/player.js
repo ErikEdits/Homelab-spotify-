@@ -195,6 +195,7 @@ class Player {
 
   next(auto = false) {
     if (!this.items.length) return;
+    if (!auto) this._reportSkip();
     this._finishCrossfade();
     if (this.index < this.items.length - 1) {
       this.index++;
@@ -627,6 +628,14 @@ class Player {
       }
     })();
     return this._autoplayPending;
+  }
+
+  /** Früh weitergeschaltet (bevor der Song als gehört zählt): der Feed schlägt ihn dann seltener vor. */
+  _reportSkip() {
+    const track = this.current;
+    const at = this.time().current;
+    if (!track || this.reported || at < 1 || setting("private_session")) return;
+    api("/history/skip", { method: "POST", body: { track_id: track.id } }).catch(() => {});
   }
 
   _onTime() {

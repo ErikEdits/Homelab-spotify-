@@ -125,12 +125,12 @@ SETTINGS: list[Setting] = [
     # ================================================================ Startseite (Benutzer)
     _s("home_quick", "user", "Startseite", "bool", True, "Schnellzugriff-Kacheln"),
     _s("home_recent", "user", "Startseite", "bool", True, "„Zuletzt gehört“"),
-    _s("home_mixes", "user", "Startseite", "bool", True, "„Deine Mixe“"),
+    _s("home_mixes", "user", "Startseite", "bool", True, "„Für dich gemacht“, Top-Genres und „Deine Mixe“"),
     _s("home_new", "user", "Startseite", "bool", True, "„Neu in deiner Bibliothek“"),
     _s("home_top_tracks", "user", "Startseite", "bool", True, "„Deine Top-Songs“"),
     _s("home_artists", "user", "Startseite", "bool", True, "„Deine Künstler“"),
     _s("home_playlists", "user", "Startseite", "bool", True, "„Deine Playlists“"),
-    _s("home_discover", "user", "Startseite", "bool", True, "„Entdecken“"),
+    _s("home_discover", "user", "Startseite", "bool", True, "„Entdecken“ und „Weil du … gehört hast“"),
     _s("home_items", "user", "Startseite", "int", 12, "Einträge pro Reihe", min=4, max=30, step=1),
 
     # ================================================================ Suche & Bibliothek (Benutzer)

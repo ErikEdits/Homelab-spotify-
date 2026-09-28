@@ -111,7 +111,7 @@ const routes = [
   [/^#\/album\/(?<id>[^/?]+)/, albumView, "album"],
   [/^#\/artist\/(?<id>[^/?]+)/, artistView, "artist"],
   [/^#\/playlist\/(?<id>\d+)/, playlistView, "playlist"],
-  [/^#\/mix\/(?<kind>genre|radio|random)\/?(?<value>[^?]*)/, mixView, "mix"],
+  [/^#\/mix\/(?<kind>[a-z]+)\/?(?<value>[^?]*)/, mixView, "mix"],
 ];
 
 let current = null;

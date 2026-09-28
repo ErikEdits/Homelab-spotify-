@@ -47,6 +47,17 @@ in deine Bibliothek.
 - **Fehlt ein Song? Holen!** Name oder Spotify-Link (Song, Album, Playlist, Künstler) eingeben,
   Homify zeigt die Treffer, markiert, was du schon hast, und holt den Rest mit einem Klick.
 - **Mehrere Benutzer** mit eigenen Playlists, Lieblingssongs und Verlauf.
+- **Persönlicher Feed wie bei Spotify** – für jeden Benutzer eigen, direkt auf dem Server berechnet
+  (keine Daten gehen nach außen):
+  - „Für dich gemacht“ mit bis zu 6 **Daily Mixes** (deine Lieblingsrichtungen, jeweils mit Lieblingssongs,
+    unbekannten Songs derselben Künstler und passenden anderen Künstlern), **Mix der Woche** (nur Songs, die du
+    noch nie gehört hast – jeden Montag neu), **Neu für dich**, **Auf Dauerschleife**, **Zeitreise** (Lieblinge,
+    die du länger nicht gehört hast), ein **Morgen-/Nachmittags-/Abend-/Nacht-Mix** und **Beliebt bei Homify**.
+  - „**Weil du … gehört hast**“, „**Deine Top-Genres**“ und „Entdecken“ mit Alben, die zu dir passen.
+  - Grundlage: was du hörst (neuere Plays zählen mehr), Lieblingssongs, deine Playlists, Songs, die du in den
+    ersten Sekunden überspringst (werden seltener vorgeschlagen), und was bei allen Benutzern oft in derselben
+    Hörsitzung läuft. Mixe bleiben einen Tag lang gleich; jeder Mix lässt sich als Playlist speichern.
+    In einer privaten Sitzung wird nichts davon erfasst.
 - **Playlist zusammenstellen** (Knopf in der Bibliothek, beim „+“ in der Seitenleiste, im Menü eines Songs
   und auf Künstlerseiten): Homify baut eine Playlist ähnlich wie ein Song oder Künstler, nach Genre,
   Jahrzehnt, aus deinen Top-Songs, Lieblingssongs, neuen Songs, „Wiederentdecken“ oder zufällig –
@@ -81,7 +92,7 @@ Gruppe. Geänderte Werte sind markiert und lassen sich mit ↺ auf den Standard 
 | Wiedergabe (15) | Qualität im WLAN und bei mobilen Daten, Überblenden (0–12 s), lückenlose Wiedergabe, Autoplay, Lautstärke angleichen (pro Song/Album, leise/normal/laut), sanft pausieren, Geschwindigkeit, letzte Warteschlange wiederherstellen, „Zurück“-Verhalten, Sprungweite, ab wann ein Song als gehört zählt, private Sitzung, intelligenter Zufall |
 | Equalizer (8) | Ein/Aus, 21 Presets wie bei Spotify (Bass-Booster, Dance, Deep, Hip-Hop, R&B, Rock, Kleine Lautsprecher, Stimmen-Booster …) als Knöpfe, 6 Regler auf denselben Frequenzen wie Spotify (60 Hz bis 15 kHz), Limiter gegen Übersteuern |
 | Aussehen (15) | Design (Dunkel, Schwarz/AMOLED, Gedämpft), 8 Akzentfarben, Farben aus dem Cover, Größe der Oberfläche (85–140 %), Kachelgröße, kompakte Listen, Cover/Album-Spalte in Listen, Animationen, Startseite beim Öffnen, Abspielen mit einem Klick, Restzeit, Nachfragen vor dem Löschen, Tastenkürzel, Songtext-Knopf |
-| Startseite (9) | Jede Reihe einzeln ein-/ausblenden, Einträge pro Reihe |
+| Startseite (9) | Jede Reihe einzeln ein-/ausblenden (auch „Für dich gemacht“, Top-Genres, „Weil du … gehört hast“), Einträge pro Reihe |
 | Suche & Bibliothek (7) | Spotify-Vorschläge automatisch oder per Knopf, vorhandene Songs ausblenden, Start-Tab und Sortierung der Bibliothek, geholte Songs automatisch liken, Songs pro Mix |
 
 **46 Server-Einstellungen** – nur für Admins, gelten für alle:
