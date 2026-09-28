@@ -5,6 +5,7 @@ import { albumCard, artistCard, navigate, playlistCard, playButton, playAlbum, p
 import { downloadButton, playTrackIds } from "./downloads.js";
 import { player } from "./player.js";
 import { clear, colorFor, cover, debounce, fmtTime, h, icon, plural, remoteCover } from "./ui.js";
+import { setting } from "./usersettings.js";
 
 const LINK = /(open\.spotify\.com|spotify\.link|youtube\.com|youtu\.be)\//i;
 
@@ -28,21 +29,23 @@ export function searchView(_params, query) {
       return;
     }
     const isLink = LINK.test(q);
+    let localHits = 0;
     if (isLink) {
       clear(localBox);
     } else {
       try {
         const res = await api(`/search?q=${encodeURIComponent(q)}`);
         if (my !== seq) return;
+        localHits = res.tracks.length + res.albums.length + res.artists.length;
         renderLocal(localBox, res, q);
       } catch (e) {
         if (my !== seq) return;
         clear(localBox).append(h("p", { class: "error" }, e.message));
       }
     }
-    renderSpotifyLoading(spotifyBox, isLink);
     const doSpotify = async () => {
       if (my !== seq) return;
+      renderSpotifyLoading(spotifyBox, isLink);
       spotifyCtrl = new AbortController();
       try {
         const res = await api(`/spotify/search?q=${encodeURIComponent(q)}`, { signal: spotifyCtrl.signal });
@@ -53,6 +56,13 @@ export function searchView(_params, query) {
         renderSpotifyError(spotifyBox, e, q);
       }
     };
+    // Einstellung „Spotify-Vorschläge automatisch zeigen“ (ohne Treffer oder bei Links immer)
+    if (!setting("spotify_suggestions") && !isLink && localHits) {
+      clear(spotifyBox).append(h("div", { class: "row-actions", style: { margin: "8px 0 32px" } },
+        h("button", { class: "btn btn-outline", onclick: doSpotify }, icon("cloud", "sm"), `„${q}“ auf Spotify suchen`)));
+      return;
+    }
+    renderSpotifyLoading(spotifyBox, isLink);
     if (immediate || isLink) doSpotify();
     else setTimeout(doSpotify, 450);
   };
@@ -232,12 +242,16 @@ function renderSpotify(box, res, q) {
     return;
   }
 
-  const tracks = res.tracks || [];
-  const missing = tracks.filter((t) => !t.library_id).length;
+  const all = res.tracks || [];
+  const missing = all.filter((t) => !t.library_id).length;
+  // Einstellung „Vorhandene Songs in Vorschlägen ausblenden“
+  const tracks = setting("spotify_hide_owned") ? all.filter((t) => !t.library_id) : all;
   content.append(spotifyHead(missing ? "Nicht dabei? Von Spotify holen" : "Vorschläge von Spotify",
-    tracks.length ? `${missing} von ${tracks.length} nicht in deiner Bibliothek` : ""));
-  if (!tracks.length) {
+    all.length ? `${missing} von ${all.length} nicht in deiner Bibliothek` : ""));
+  if (!all.length) {
     content.append(h("p", { class: "muted" }, "Spotify hat nichts gefunden. Versuch es mit „Künstler - Titel“ oder füge einen Link ein."));
+  } else if (!tracks.length) {
+    content.append(h("p", { class: "muted" }, "Alle passenden Songs sind schon in deiner Bibliothek."));
   }
   const list = h("div");
   for (const t of tracks) list.append(spotifyTrackRow(t));

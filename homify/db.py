@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     cover_id     TEXT,
     isrc         TEXT NOT NULL DEFAULT '',
     spotify_id   TEXT NOT NULL DEFAULT '',
+    gain         REAL,
+    album_gain   REAL,
     sig          TEXT NOT NULL DEFAULT '',
     search       TEXT NOT NULL DEFAULT '',
     added_at     REAL NOT NULL DEFAULT 0
@@ -137,6 +139,13 @@ CREATE TABLE IF NOT EXISTS plays (
 CREATE INDEX IF NOT EXISTS idx_plays_user ON plays(user_id, played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_track ON plays(track_id);
 
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key     TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS downloads (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER,
@@ -152,6 +161,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     message     TEXT NOT NULL DEFAULT '',
     log         TEXT NOT NULL DEFAULT '',
     spotify_ids TEXT NOT NULL DEFAULT '[]',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    auto_liked  INTEGER NOT NULL DEFAULT 0,
     created_at  REAL NOT NULL,
     started_at  REAL,
     finished_at REAL
@@ -184,9 +195,15 @@ def init() -> None:
     c = conn()
     c.executescript(SCHEMA)
     # Spätere Spalten in bestehenden Datenbanken nachrüsten
-    columns = {row[1] for row in c.execute("PRAGMA table_info(tracks)")}
-    if "rel" not in columns:
-        c.execute("ALTER TABLE tracks ADD COLUMN rel TEXT NOT NULL DEFAULT ''")
+    added = {
+        "tracks": [("rel", "TEXT NOT NULL DEFAULT ''"), ("gain", "REAL"), ("album_gain", "REAL")],
+        "downloads": [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("auto_liked", "INTEGER NOT NULL DEFAULT 0")],
+    }
+    for table, cols in added.items():
+        existing = {row[1] for row in c.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in cols:
+            if name not in existing:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 @contextmanager

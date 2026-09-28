@@ -63,12 +63,19 @@ def test_job_progress_parsing(scanned, tmp_path, monkeypatch, music_dir):
     monkeypatch.setattr(downloader, "build_command", fake_command)
     monkeypatch.setattr(downloader, "venv_python", lambda: type("P", (), {"exists": lambda self: True})())
     monkeypatch.setattr(downloader.scanner, "start", lambda *a, **k: True)
+    monkeypatch.setattr(downloader.time, "sleep", lambda s: None)
+    monkeypatch.setitem(downloader.config._data, "download_retries", 1)
     mgr = DownloadManager()
     job = mgr.add(1, "https://open.spotify.com/album/x", kind="album", title="Discovery")
     row = db.query_one("SELECT * FROM downloads WHERE id = ?", (job["id"],))
     mgr._run(row)
+    # 1. Versuch teilweise erfolgreich -> wird automatisch wiederholt
+    first = mgr.get(job["id"])
+    assert first["status"] == "queued" and first["attempts"] == 1
+    assert first["message"].startswith("Neuer Versuch")
+    mgr._run(db.query_one("SELECT * FROM downloads WHERE id = ?", (job["id"],)))
     done = mgr.get(job["id"])
-    assert done["status"] == "partial"
+    assert done["status"] == "partial" and done["attempts"] == 2
     assert done["done"] == 2 and done["total"] == 3 and done["failed"] == 1
     assert "YouTube Music" in done["message"]
     # Datei wurde aus dem Zwischenordner in den Speicherort verschoben
@@ -78,6 +85,36 @@ def test_job_progress_parsing(scanned, tmp_path, monkeypatch, music_dir):
     moved.parent.rmdir()
     assert not (downloader.STAGING_DIR / f"job-{job['id']}").exists()
     assert seen["archive"] and not os.path.exists(seen["archive"])
+
+
+def test_build_command_follows_settings(scanned, monkeypatch):
+    from homify.config import config
+
+    for key, value in {"download_lyrics": True, "sponsor_block": True, "skip_explicit": True,
+                       "filename_restrict": "ascii", "audio_providers": "youtube-music youtube"}.items():
+        monkeypatch.setitem(config._data, key, value)
+    cmd = build_command("https://open.spotify.com/track/abc")
+    assert "--generate-lrc" in cmd and "--sponsor-block" in cmd and "--skip-explicit" in cmd
+    assert cmd[cmd.index("--restrict") + 1] == "ascii"
+    assert cmd[cmd.index("--audio") + 1: cmd.index("--audio") + 3] == ["youtube-music", "youtube"]
+    monkeypatch.setitem(config._data, "download_lyrics", False)
+    monkeypatch.setitem(config._data, "filename_restrict", "none")
+    cmd = build_command("https://open.spotify.com/track/abc")
+    assert "--generate-lrc" not in cmd and "--restrict" not in cmd
+
+
+def test_daily_download_limit(scanned, monkeypatch):
+    from homify import auth
+    from homify.config import config
+
+    uid = auth.create_user("limitiert", "limit1234")
+    monkeypatch.setitem(config._data, "daily_download_limit", 2)
+    mgr = DownloadManager()
+    mgr.add(uid, "Künstler - Song 1")
+    mgr.add(uid, "Künstler - Song 2")
+    with pytest.raises(ValueError, match="Tageslimit"):
+        mgr.add(uid, "Künstler - Song 3")
+    db.execute("DELETE FROM downloads WHERE user_id = ?", (uid,))
 
 
 def test_build_command_uses_staging_and_archive(scanned, tmp_path):

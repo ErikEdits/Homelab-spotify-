@@ -47,8 +47,39 @@ in deine Bibliothek.
 - **Fehlt ein Song? Holen!** Name oder Spotify-Link (Song, Album, Playlist, Künstler) eingeben,
   Homify zeigt die Treffer, markiert, was du schon hast, und holt den Rest mit einem Klick.
 - **Mehrere Benutzer** mit eigenen Playlists, Lieblingssongs und Verlauf.
-- **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, Sperrbildschirm-/Kopfhörer-Steuerung,
-  Datensparmodus für unterwegs, Sicherung zum Umziehen auf den Server.
+- **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, Autoplay, Songtexte (mitlaufend), Überblenden,
+  Equalizer, Lautstärke angleichen, Sperrbildschirm-/Kopfhörer-Steuerung, Datensparmodus für
+  unterwegs, tägliche Sicherung.
+- **100 Einstellungen**, alle sofort gespeichert – siehe unten.
+
+## Die 100 Einstellungen
+
+Unter **Einstellungen** (Konto-Symbol oben rechts). Oben gibt es eine Suche und Sprungmarken zu jeder
+Gruppe. Geänderte Werte sind markiert und lassen sich mit ↺ auf den Standard zurücksetzen.
+
+**54 persönliche Einstellungen** – gelten für dein Konto auf allen Geräten (Website, Handy, PC):
+
+| Gruppe | Was du einstellen kannst |
+|---|---|
+| Wiedergabe (15) | Qualität im WLAN und bei mobilen Daten, Überblenden (0–12 s), lückenlose Wiedergabe, Autoplay, Lautstärke angleichen (pro Song/Album, leise/normal/laut), sanft pausieren, Geschwindigkeit, letzte Warteschlange wiederherstellen, „Zurück“-Verhalten, Sprungweite, ab wann ein Song als gehört zählt, private Sitzung, intelligenter Zufall |
+| Equalizer (8) | Ein/Aus, 11 Voreinstellungen (Bass, Rock, Pop, Klassik …), 6 Regler von 60 Hz bis 15 kHz |
+| Aussehen (15) | Design (Dunkel, Schwarz/AMOLED, Gedämpft), 8 Akzentfarben, Farben aus dem Cover, Größe der Oberfläche (85–140 %), Kachelgröße, kompakte Listen, Cover/Album-Spalte in Listen, Animationen, Startseite beim Öffnen, Abspielen mit einem Klick, Restzeit, Nachfragen vor dem Löschen, Tastenkürzel, Songtext-Knopf |
+| Startseite (9) | Jede Reihe einzeln ein-/ausblenden, Einträge pro Reihe |
+| Suche & Bibliothek (7) | Spotify-Vorschläge automatisch oder per Knopf, vorhandene Songs ausblenden, Start-Tab und Sortierung der Bibliothek, geholte Songs automatisch liken, Songs pro Mix |
+
+**46 Server-Einstellungen** – nur für Admins, gelten für alle:
+
+| Gruppe | Was du einstellen kannst |
+|---|---|
+| Bibliothek & Scan (12) | Scan-Intervall, Scan beim Start, gleichzeitig gelesene Dateien (Last fürs NAS), kurze Dateien und Ordner ignorieren, Ordnername als Album, Künstler/Titel aus dem Dateinamen, „feat.“-Gäste, Trennzeichen, `cover.jpg` bevorzugen, Sicherheitsgrenze gegen versehentliches Löschen (z. B. wenn das NAS kurz weg ist), Lautheit messen |
+| Streaming (6) | Format beim Umwandeln (MP3/AAC/Opus), Bitraten, Cache-Größe, gleichzeitige Umwandlungen, Download aufs Gerät erlauben |
+| Downloads (spotDL) (19) | Format, Bitrate, Threads, Dateinamen-Vorlage, Songtexte mitladen, SponsorBlock, Audio-Quellen, Explicit überspringen, Dateinamen vereinfachen, automatische Wiederholung, Tageslimit pro Benutzer, Recht für neue Benutzer, wöchentliches spotDL-Update, Aufräumen, Cookies, eigene Spotify-API |
+| Server & Sicherheit (9) | Name des Servers, Erreichbarkeit (Netzwerk oder nur dieser Rechner), Port, Anmeldedauer, Verlauf aufbewahren, tägliche Sicherung + Anzahl, Protokoll, eigener ffmpeg-Pfad |
+
+Dazu kommen die Bereiche **Speicherort (NAS)**, **Zugriff/Tailscale**, **Benutzer**, **Sicherung**
+und **System** (Neustart, Versionen). Empfehlungen für den Ubuntu-Server mit UGREEN-NAS:
+*Gleichzeitig gelesene Dateien* 4–8, *Sicherheitsgrenze* 30 %, *Tägliche Sicherung* an,
+*Format beim Umwandeln* AAC oder Opus, *Qualität bei mobilen Daten* „Niedrig“.
 
 ---
 
@@ -168,10 +199,13 @@ Gut zu wissen:
 |---|---|
 | Leertaste | Wiedergabe / Pause |
 | Strg + → / ← | Nächster / vorheriger Song |
-| Umschalt + → / ← | 5 Sekunden vor / zurück |
+| Umschalt + → / ← | Vor / zurück spulen (Sprungweite einstellbar, Standard 10 s) |
 | Strg + ↑ / ↓ | Lauter / leiser |
 | `S` / `R` / `M` | Zufall / Wiederholen / Stumm |
+| `L` | Songtext |
 | `/` oder Strg + K | Suche |
+
+Tastenkürzel lassen sich unter *Einstellungen → Aussehen* abschalten.
 
 ## Probleme?
 

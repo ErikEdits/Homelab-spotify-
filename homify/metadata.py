@@ -77,6 +77,8 @@ class TrackInfo:
     isrc: str = ""
     source_url: str = ""
     cover: bytes | None = None
+    gain: float | None = None        # ReplayGain Track (dB)
+    album_gain: float | None = None  # ReplayGain Album (dB)
     readable: bool = True
 
 
@@ -122,7 +124,14 @@ class _ID3Reader(_Reader):
     def __init__(self, tags: ID3):
         self.tags = tags
 
+    TXXX = {"rg_track": "replaygain_track_gain", "rg_album": "replaygain_album_gain"}
+
     def text(self, key: str) -> list[str]:
+        if key in self.TXXX:
+            wanted = self.TXXX[key]
+            return _clean(t for fr in self.tags.getall("TXXX") if fr.desc.lower() == wanted for t in fr.text)
+        if key == "lyrics":
+            return _clean(fr.text for fr in self.tags.getall("USLT"))
         frame_id = self.FRAMES.get(key)
         if not frame_id:
             return []
@@ -157,6 +166,9 @@ class _MP4Reader(_Reader):
         "title": ["\xa9nam"], "artist": ["\xa9ART"], "album": ["\xa9alb"],
         "albumartist": ["aART"], "date": ["\xa9day"], "genre": ["\xa9gen"],
         "isrc": ["----:com.apple.iTunes:ISRC", "----:spotdl:ISRC"],
+        "rg_track": ["----:com.apple.iTunes:replaygain_track_gain", "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"],
+        "rg_album": ["----:com.apple.iTunes:replaygain_album_gain", "----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"],
+        "lyrics": ["\xa9lyr"],
     }
 
     def __init__(self, tags: MP4Tags):
@@ -189,7 +201,8 @@ class _VorbisReader(_Reader):
         "title": ["title"], "artist": ["artist"], "album": ["album"],
         "albumartist": ["albumartist", "album artist", "album_artist"],
         "track": ["tracknumber"], "disc": ["discnumber"], "date": ["date", "year", "originaldate"],
-        "genre": ["genre"], "isrc": ["isrc"],
+        "genre": ["genre"], "isrc": ["isrc"], "rg_track": ["replaygain_track_gain"],
+        "rg_album": ["replaygain_album_gain"], "lyrics": ["lyrics", "unsyncedlyrics"],
     }
 
     def __init__(self, tags, file_obj):
@@ -235,6 +248,7 @@ class _APEReader(_Reader):
         "title": ["Title"], "artist": ["Artist"], "album": ["Album"],
         "albumartist": ["Album Artist", "AlbumArtist"], "track": ["Track"], "disc": ["Disc"],
         "date": ["Year", "Date"], "genre": ["Genre"], "isrc": ["ISRC"],
+        "rg_track": ["REPLAYGAIN_TRACK_GAIN"], "rg_album": ["REPLAYGAIN_ALBUM_GAIN"], "lyrics": ["Lyrics"],
     }
 
     def __init__(self, tags: APEv2):
@@ -265,6 +279,7 @@ class _ASFReader(_Reader):
         "title": ["Title"], "artist": ["Author", "WM/AlbumArtist"], "album": ["WM/AlbumTitle"],
         "albumartist": ["WM/AlbumArtist"], "track": ["WM/TrackNumber", "WM/Track"],
         "disc": ["WM/PartOfSet"], "date": ["WM/Year"], "genre": ["WM/Genre"], "isrc": ["WM/ISRC"],
+        "rg_track": ["replaygain_track_gain"], "rg_album": ["replaygain_album_gain"], "lyrics": ["WM/Lyrics"],
     }
 
     def __init__(self, tags: ASFTags):
@@ -336,23 +351,63 @@ def guess_from_filename(path: Path, root: Path | None = None) -> TrackInfo:
     return info
 
 
-def split_artists(values: list[str], album_artist: str = "", slash_is_separator: bool = False) -> list[str]:
+_FEAT = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+", re.IGNORECASE)
+
+
+def split_artists(values: list[str], album_artist: str = "", slash_is_separator: bool = False,
+                  separators: tuple[str, ...] = (";",), split_feat: bool = False) -> list[str]:
+    """Mehrere Interpreten trennen. „AC/DC“ bleibt heil, wenn es der Album-Interpret ist."""
     out: list[str] = []
     for value in values:
-        parts = [p.strip() for p in value.split(";")]
+        parts = [value]
+        for sep in separators:
+            if not sep:
+                continue
+            if sep == "/" and slash_is_separator:
+                continue  # wird unten gesondert behandelt
+            parts = [piece for part in parts for piece in (part.split(sep) if part != album_artist else [part])]
         expanded: list[str] = []
-        for part in parts:
+        for part in (p.strip() for p in parts):
             if slash_is_separator and "/" in part and part != album_artist:
                 expanded.extend(x.strip() for x in part.split("/"))
             else:
                 expanded.append(part)
+        if split_feat:
+            expanded = [piece.strip() for part in expanded for piece in _FEAT.split(part)]
         for part in expanded:
             if part and part not in out:
                 out.append(part)
     return out
 
 
-def read_track(path, name: str | None = None) -> TrackInfo:
+def parse_gain(value: str) -> float | None:
+    m = re.search(r"[-+]?\d+(?:[.,]\d+)?", value or "")
+    if not m:
+        return None
+    try:
+        gain = float(m.group(0).replace(",", "."))
+    except ValueError:
+        return None
+    return gain if -60 < gain < 60 else None
+
+
+def read_embedded_lyrics(path, name: str | None = None) -> str:
+    """Songtext aus den Tags (USLT, ©lyr, LYRICS …) – leer, wenn keiner da ist."""
+    try:
+        f = mutagen.File(path)
+    except Exception:
+        return ""
+    reader = _reader_for(f) if f is not None else None
+    if reader is None:
+        return ""
+    try:
+        texts = reader.text("lyrics")
+    except Exception:
+        return ""
+    return max(texts, key=len) if texts else ""
+
+
+def read_track(path, name: str | None = None, options: dict | None = None) -> TrackInfo:
     """
     Liest alle Infos einer Datei (Pfad oder geöffnete Datei vom NAS).
     Wirft keine Exceptions – im Zweifel wird der Dateiname als Titel genommen.
@@ -365,7 +420,7 @@ def read_track(path, name: str | None = None) -> TrackInfo:
         f = None
 
     if f is None:
-        info = guess_from_filename(p)
+        info = guess_from_filename(p) if (options or {}).get("parse_filename", True) else TrackInfo(title=p.stem)
         info.readable = False
         info.codec, info.mime = _MIME_BY_EXT.get(p.suffix.lower(), ("", ""))
         return info
@@ -384,9 +439,11 @@ def read_track(path, name: str | None = None) -> TrackInfo:
     else:
         info.codec, info.mime = _MIME_BY_CLASS.get(cls, _MIME_BY_EXT.get(p.suffix.lower(), ("", "")))
 
+    opts = options or {}
+    parse_filename = opts.get("parse_filename", True)
     reader = _reader_for(f)
     if reader is None:
-        guessed = guess_from_filename(p)
+        guessed = guess_from_filename(p) if parse_filename else TrackInfo(title=p.stem)
         guessed.duration, guessed.bitrate, guessed.sample_rate = info.duration, info.bitrate, info.sample_rate
         guessed.codec, guessed.mime = info.codec, info.mime
         return guessed
@@ -398,7 +455,8 @@ def read_track(path, name: str | None = None) -> TrackInfo:
         info.source_url = reader.source_url()
         is_spotdl = "open.spotify.com" in info.source_url
         info.artists = split_artists(
-            reader.text("artist"), info.album_artist, slash_is_separator=is_spotdl and isinstance(reader, _ID3Reader)
+            reader.text("artist"), info.album_artist, slash_is_separator=is_spotdl and isinstance(reader, _ID3Reader),
+            separators=tuple(opts.get("separators", (";",))), split_feat=bool(opts.get("split_feat", False)),
         )
         info.track_no = parse_int(reader.first("track"))
         info.disc_no = parse_int(reader.first("disc"))
@@ -407,11 +465,13 @@ def read_track(path, name: str | None = None) -> TrackInfo:
         info.genre = genres[0] if genres else ""
         info.isrc = reader.first("isrc").upper()
         info.cover = reader.cover()
+        info.gain = parse_gain(reader.first("rg_track"))
+        info.album_gain = parse_gain(reader.first("rg_album"))
     except Exception:
         pass
 
     if not info.title or not info.artists:
-        guessed = guess_from_filename(p)
+        guessed = guess_from_filename(p) if parse_filename else TrackInfo(title=p.stem)
         info.title = info.title or guessed.title
         info.artists = info.artists or guessed.artists
         info.track_no = info.track_no or guessed.track_no

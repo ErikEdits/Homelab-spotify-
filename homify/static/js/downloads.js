@@ -3,7 +3,8 @@
 import { api, emit, on, state } from "./api.js";
 import { navigate } from "./components.js";
 import { player } from "./player.js";
-import { clear, cover, fmtDate, h, icon, remoteCover, toast } from "./ui.js";
+import { clear, confirmDialog, cover, fmtDate, h, icon, remoteCover, toast } from "./ui.js";
+import { confirmDelete } from "./usersettings.js";
 
 export const downloads = { jobs: [], active: 0, byQuery: new Map() };
 let timer = null;
@@ -144,7 +145,11 @@ export async function downloadsView() {
         if (["error", "partial", "cancelled"].includes(job.status)) {
           actions.append(h("button", { class: "icon-btn", title: "Nochmal versuchen", "aria-label": "Nochmal versuchen", onclick: async () => { await api(`/downloads/${job.id}/retry`, { method: "POST" }); fastUntil = Date.now() + 10000; refreshDownloads(); } }, icon("refresh")));
         }
-        actions.append(h("button", { class: "icon-btn", title: "Aus Liste entfernen", "aria-label": "Entfernen", onclick: async () => { await api(`/downloads/${job.id}`, { method: "DELETE" }); refreshDownloads(); } }, icon("trash")));
+        actions.append(h("button", { class: "icon-btn", title: "Aus Liste entfernen", "aria-label": "Entfernen", onclick: async () => {
+          if (!await confirmDelete(() => confirmDialog("Aus der Liste entfernen?", `„${job.title}“ verschwindet aus der Download-Liste. Geholte Songs bleiben in der Bibliothek.`, { okLabel: "Entfernen" }))) return;
+          await api(`/downloads/${job.id}`, { method: "DELETE" });
+          refreshDownloads();
+        } }, icon("trash")));
       }
       if (job.log?.length) {
         actions.append(h("button", { class: "icon-btn", title: "Protokoll", "aria-label": "Protokoll", onclick: () => { openLogs.has(job.id) ? openLogs.delete(job.id) : openLogs.add(job.id); draw(); } }, icon("list")));

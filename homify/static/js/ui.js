@@ -48,6 +48,7 @@ const ICONS = {
   person: '<circle cx="12" cy="7.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   album: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
   lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+  mic: '<rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3.5M8.5 21h7"/>',
   wifi: '<path d="M2 8.8a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/>',
 };
 
@@ -66,7 +67,7 @@ export function hydrateIcons(root = document) {
 export function logoSvg() {
   const tpl = document.createElement("template");
   tpl.innerHTML = `<svg viewBox="0 0 48 48" width="100%" height="100%" aria-hidden="true">
-    <circle cx="24" cy="24" r="24" fill="#1ed760"/>
+    <circle cx="24" cy="24" r="24" style="fill: var(--accent, #1ed760)"/>
     <path d="M12 24.5 24 14l12 10.5V35H28v-7h-8v7h-8z" fill="#000"/>
     <path d="M30.5 12.5c2.8 1.3 4.9 3.5 6 6.3M29 16.2c1.7.8 3 2.1 3.7 3.8" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"/>
   </svg>`;

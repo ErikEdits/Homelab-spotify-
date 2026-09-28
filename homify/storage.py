@@ -55,7 +55,8 @@ class Storage:
     def available(self) -> tuple[bool, str]:
         raise NotImplementedError
 
-    def walk(self, on_error: ErrorCallback | None = None) -> Iterator[tuple[str, int, float]]:
+    def walk(self, on_error: ErrorCallback | None = None,
+             skip: set[str] | None = None) -> Iterator[tuple[str, int, float]]:
         raise NotImplementedError
 
     def open(self, rel: str) -> BinaryIO:
@@ -113,7 +114,9 @@ class LocalStorage(Storage):
             return False, f"Ordner nicht lesbar: {exc}"
         return True, "OK"
 
-    def walk(self, on_error: ErrorCallback | None = None) -> Iterator[tuple[str, int, float]]:
+    def walk(self, on_error: ErrorCallback | None = None,
+             skip: set[str] | None = None) -> Iterator[tuple[str, int, float]]:
+        skip_dirs = SKIP_DIRS | {d.lower() for d in (skip or ())}
         stack = [self.root]
         linked: set[str] = set()  # Schutz vor Endlosschleifen durch Symlinks
         while stack:
@@ -131,7 +134,7 @@ class LocalStorage(Storage):
                         continue
                     try:
                         if entry.is_dir(follow_symlinks=True):
-                            if name.lower() in SKIP_DIRS:
+                            if name.lower() in skip_dirs:
                                 continue
                             if entry.is_symlink():
                                 real = os.path.realpath(entry.path)
@@ -300,9 +303,11 @@ class SmbStorage(Storage):
             return False, _friendly_smb_error(exc, self)
 
     # ------------------------------------------------------------ Dateien
-    def walk(self, on_error: ErrorCallback | None = None) -> Iterator[tuple[str, int, float]]:
+    def walk(self, on_error: ErrorCallback | None = None,
+             skip: set[str] | None = None) -> Iterator[tuple[str, int, float]]:
         import smbclient
 
+        skip_dirs = SKIP_DIRS | {d.lower() for d in (skip or ())}
         stack = [""]
         while stack:
             rel_dir = stack.pop()
@@ -319,7 +324,7 @@ class SmbStorage(Storage):
                 rel = f"{rel_dir}/{name}" if rel_dir else name
                 try:
                     if entry.is_dir():
-                        if name.lower() not in SKIP_DIRS:
+                        if name.lower() not in skip_dirs:
                             stack.append(rel)
                     elif entry.is_file():
                         s = entry.stat()

@@ -17,10 +17,11 @@ DATA_DIR = Path(os.environ.get("HOMIFY_DATA", APP_DIR / "data")).resolve()
 
 IS_WINDOWS = sys.platform.startswith("win")
 
+from .settings_schema import BY_KEY as SCHEMA  # noqa: E402  (reine Daten, keine Abhängigkeiten)
+from .settings_schema import SECRET_KEYS as _SCHEMA_SECRETS  # noqa: E402
+from .settings_schema import SERVER_SETTINGS, validate  # noqa: E402
+
 DEFAULTS: dict[str, Any] = {
-    # Server
-    "host": "0.0.0.0",
-    "port": 8484,
     # Speicherort der Musik: "local" = App-Ordner (data/music), "nas" = NAS per SMB,
     # "folder" = eigener Pfad (z. B. /mnt/nas/musik oder \\\\NAS\\Musik)
     "storage_mode": "local",
@@ -32,25 +33,12 @@ DEFAULTS: dict[str, Any] = {
     "nas_password": "",
     # Zusätzliche Ordner, die nur gelesen werden (z. B. vorhandene Sammlung)
     "music_dirs": [],
-    "scan_interval_minutes": 30,
-    # Downloads über spotDL
-    "output_template": "{album-artist}/{album}/{artists} - {title}.{output-ext}",
-    "download_format": "mp3",
-    "download_bitrate": "auto",
-    "download_threads": 2,
-    "spotdl_extra_args": "",
-    "spotdl_cookie_file": "",
-    # Spotify (optional – ohne Zugangsdaten nutzt spotDL einen freien Client)
-    "spotify_client_id": "",
-    "spotify_client_secret": "",
-    "spotify_use_official_api": False,
-    # Streaming
-    "transcode_cache_mb": 2048,
-    "ffmpeg_path": "",
+    # Alle Server-Einstellungen aus settings_schema.py
+    **{s.key: s.default for s in SERVER_SETTINGS},
 }
 
 # Werte, die niemals ans Frontend gehen
-SECRET_KEYS = {"spotify_client_secret", "nas_password"}
+SECRET_KEYS = {"nas_password", *_SCHEMA_SECRETS}
 
 
 class Config:
@@ -68,7 +56,12 @@ class Config:
                 except (OSError, ValueError):
                     stored = {}
                 for key, value in stored.items():
-                    if key in DEFAULTS:
+                    if key in SCHEMA:
+                        try:
+                            self._data[key] = validate(SCHEMA[key], value)
+                        except ValueError:
+                            pass  # ungültiger alter Wert -> Standard behalten
+                    elif key in DEFAULTS:
                         self._data[key] = value
                 # Ältere Versionen kannten nur „music_dirs“: erster Ordner wird zum Speicherort
                 if "storage_mode" not in stored and self._data["music_dirs"]:
@@ -105,7 +98,10 @@ class Config:
                     continue
                 if key in SECRET_KEYS and value == "********":
                     continue  # Platzhalter aus dem Frontend -> altes Secret behalten
-                self._data[key] = _coerce(key, value)
+                if key in SCHEMA:
+                    self._data[key] = validate(SCHEMA[key], value)  # wirft ValueError bei Unsinn
+                else:
+                    self._data[key] = _coerce(key, value)
             self.save()
 
     def public(self) -> dict[str, Any]:

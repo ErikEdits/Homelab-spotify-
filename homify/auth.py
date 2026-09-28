@@ -14,7 +14,12 @@ from fastapi import Depends, HTTPException, Request
 from . import db
 
 COOKIE = "homify_session"
-SESSION_DAYS = 180
+
+
+def session_days() -> int:
+    from .config import config
+
+    return int(config.get("session_days") or 180)
 _ITERATIONS = 240_000
 
 
@@ -41,7 +46,11 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def create_user(username: str, password: str, is_admin: bool = False, can_download: bool = True) -> int:
+def create_user(username: str, password: str, is_admin: bool = False, can_download: bool | None = None) -> int:
+    if can_download is None:
+        from .config import config
+
+        can_download = bool(config.get("new_users_can_download"))
     username = username.strip()
     if not username or len(username) > 64:
         raise ValueError("Ungültiger Benutzername")
@@ -106,7 +115,7 @@ def user_for_token(token: str | None) -> dict | None:
     if not row:
         return None
     now = time.time()
-    if now - row["last_seen"] > SESSION_DAYS * 86400:
+    if now - row["last_seen"] > session_days() * 86400:
         db.execute("DELETE FROM sessions WHERE token_hash = ?", (row["token_hash"],))
         return None
     if now - row["last_seen"] > 3600:

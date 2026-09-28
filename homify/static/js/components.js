@@ -3,8 +3,9 @@
 import { api, emit, isLiked, loadPlaylists, on, setLiked, state } from "./api.js";
 import { player } from "./player.js";
 import {
-  cover, fmtDate, fmtTime, h, icon, modal, mosaic, openMenu, plural, prompt, toast,
+  confirmDialog, cover, fmtDate, fmtTime, h, icon, modal, mosaic, openMenu, plural, prompt, toast,
 } from "./ui.js";
+import { confirmDelete, setting } from "./usersettings.js";
 
 export function navigate(hash) {
   if (location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
@@ -93,6 +94,7 @@ export function trackMenu(event, track, { playlistId = null, entryId = null, onR
     { label: liked ? "Aus Lieblingssongs entfernen" : "Zu Lieblingssongs hinzufügen", icon: "heart",
       action: () => setLiked(track.id, !liked).then(() => toast(liked ? "Entfernt" : "Zu Lieblingssongs hinzugefügt")).catch((e) => toast(e.message, { error: true })) },
     playlistId && entryId ? { label: "Aus dieser Playlist entfernen", icon: "trash", action: async () => {
+      if (!await confirmDelete(() => confirmDialog("Aus Playlist entfernen?", `„${track.title}“ wird aus dieser Playlist entfernt.`, { okLabel: "Entfernen", danger: true }))) return;
       await api(`/playlists/${playlistId}/entries/${entryId}`, { method: "DELETE" });
       toast("Aus Playlist entfernt");
       onRemove?.();
@@ -103,10 +105,10 @@ export function trackMenu(event, track, { playlistId = null, entryId = null, onR
     track.artists?.[0]?.id ? { label: "Zum Künstler", icon: "person", action: () => navigate(`#/artist/${track.artists[0].id}`) } : null,
     track.album_id ? { label: "Zum Album", icon: "album", action: () => navigate(`#/album/${track.album_id}`) } : null,
     "sep",
-    { label: "Datei aufs Gerät laden", icon: "download", action: () => {
+    state.user?.is_admin || state.user?.server?.allow_file_download !== false ? { label: "Datei aufs Gerät laden", icon: "download", action: () => {
       const a = h("a", { href: `/api/tracks/${encodeURIComponent(track.id)}/file`, download: "" });
       document.body.append(a); a.click(); a.remove();
-    } },
+    } } : null,
     { label: "Details", icon: "info", action: () => trackDetails(track) },
   ];
   openMenu(event, items);
@@ -133,9 +135,10 @@ function trackDetails(track) {
  */
 export function trackList(tracks, opts = {}) {
   const {
-    album = true, showCover = true, added = false, numbered = "index", context = null,
+    album: albumColumn = true, showCover = true, added = false, numbered = "index", context = null,
     playlistId = null, onReorder = null, discs = false, onChange = null,
   } = opts;
+  const album = albumColumn && setting("list_album_column") !== false;
   const wrap = h("div", { class: `tracklist ${album ? "" : "no-album"} ${added ? "with-added" : ""}` });
   const head = h("div", { class: "tl-head" },
     h("div", { style: { textAlign: "right" } }, "#"), h("div", {}, "Titel"),
@@ -172,7 +175,7 @@ export function trackList(tracks, opts = {}) {
     row.querySelector(".num").addEventListener("click", (e) => { e.stopPropagation(); play(index); });
     row.addEventListener("dblclick", () => play(index));
     row.addEventListener("click", () => {
-      if (window.matchMedia("(hover: none), (max-width: 720px)").matches) play(index);
+      if (setting("single_click_play") || window.matchMedia("(hover: none), (max-width: 720px)").matches) play(index);
       else {
         wrap.querySelectorAll(".tl-row.selected").forEach((r) => r.classList.remove("selected"));
         row.classList.add("selected");
@@ -296,7 +299,7 @@ export function mixCard(m) {
     title: m.name, subtitle: m.subtitle || plural(m.track_count || 0, "Song", "Songs"),
     coverEl: mosaic(m.covers, { size: 300 }), href: `#/mix/${kind}/${encodeURIComponent(value)}`,
     onPlay: async () => {
-      const tracks = await api(`/mix/${kind}?value=${encodeURIComponent(value)}`);
+      const tracks = await api(`/mix/${kind}?value=${encodeURIComponent(value)}&limit=${Number(setting("mix_size") || 60)}`);
       player.playTracks(tracks, 0, { type: "mix", name: m.name, href: `#/mix/${kind}/${encodeURIComponent(value)}` });
     },
   });

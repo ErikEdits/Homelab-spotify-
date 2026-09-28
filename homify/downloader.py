@@ -92,6 +92,17 @@ def build_command(query: str, staging: str | None = None, archive: str | None = 
     cookie = (config.get("spotdl_cookie_file") or "").strip()
     if cookie:
         cmd += ["--cookie-file", cookie]
+    providers = (config.get("audio_providers") or "youtube-music").split()
+    cmd += ["--audio", *providers]
+    if config.get("download_lyrics"):
+        cmd += ["--lyrics", "synced", "genius", "musixmatch", "--generate-lrc"]
+    if config.get("sponsor_block"):
+        cmd += ["--sponsor-block"]
+    if config.get("skip_explicit"):
+        cmd += ["--skip-explicit"]
+    restrict = config.get("filename_restrict") or "none"
+    if restrict != "none":
+        cmd += ["--restrict", restrict]
     if archive:
         cmd += ["--archive", archive]  # Songs, die schon in der Bibliothek sind, überspringen
     extra = (config.get("spotdl_extra_args") or "").strip()
@@ -168,6 +179,7 @@ class DownloadManager:
     def add(self, user_id: int, query: str, kind: str = "track", title: str = "", subtitle: str = "",
             image: str = "", spotify_ids: list[str] | None = None, total: int = 0) -> dict[str, Any]:
         query = validate_query(query)
+        self._check_daily_limit(user_id)
         existing = db.query_one(
             "SELECT id FROM downloads WHERE query = ? AND status IN ('queued', 'running')", (query,)
         )
@@ -181,6 +193,19 @@ class DownloadManager:
         )
         self._wake.set()
         return self.get(int(cur.lastrowid))
+
+    @staticmethod
+    def _check_daily_limit(user_id: int) -> None:
+        limit = int(config.get("daily_download_limit") or 0)
+        if not limit:
+            return
+        user = db.query_one("SELECT is_admin FROM users WHERE id = ?", (user_id,))
+        if user and user["is_admin"]:
+            return
+        row = db.query_one("SELECT COUNT(*) AS n FROM downloads WHERE user_id = ? AND created_at > ?",
+                           (user_id, time.time() - 86400))
+        if row and row["n"] >= limit:
+            raise ValueError(f"Tageslimit erreicht ({limit} Downloads in 24 Stunden).")
 
     def get(self, job_id: int) -> dict[str, Any] | None:
         row = db.query_one("SELECT * FROM downloads WHERE id = ?", (job_id,))
@@ -205,7 +230,7 @@ class DownloadManager:
 
     def retry(self, job_id: int) -> None:
         db.execute(
-            "UPDATE downloads SET status = 'queued', done = 0, failed = 0, message = '', log = '', "
+            "UPDATE downloads SET status = 'queued', done = 0, failed = 0, message = '', log = '', attempts = 0, "
             "started_at = NULL, finished_at = NULL WHERE id = ? AND status NOT IN ('queued', 'running')",
             (job_id,),
         )
@@ -214,6 +239,14 @@ class DownloadManager:
     def remove(self, job_id: int) -> None:
         self.cancel(job_id)
         db.execute("DELETE FROM downloads WHERE id = ? AND status NOT IN ('queued', 'running')", (job_id,))
+
+    def prune_history(self) -> None:
+        days = int(config.get("download_history_days") or 0)
+        if days:
+            db.execute(
+                "DELETE FROM downloads WHERE status IN ('done', 'error', 'cancelled', 'partial') AND finished_at < ?",
+                (time.time() - days * 86400,),
+            )
 
     def clear_finished(self) -> None:
         db.execute("DELETE FROM downloads WHERE status IN ('done', 'error', 'cancelled', 'partial')")
@@ -260,6 +293,9 @@ class DownloadManager:
             )
             return
 
+        if job.get("attempts"):
+            time.sleep(min(60, 15 * int(job["attempts"])))  # kurz warten vor neuem Versuch
+        scanner.wait(120)  # vorherige Downloads erst einlesen -> keine doppelten Downloads
         staging = STAGING_DIR / f"job-{job_id}"
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True, exist_ok=True)
@@ -342,10 +378,24 @@ class DownloadManager:
             message = friendly_error(errors[-1] if errors else f"spotDL beendet mit Code {code}")[:500]
             if code == 0 and not errors:
                 message = "Nichts heruntergeladen – Song nicht gefunden?"
+        attempts = int(job.get("attempts") or 0) + 1
+        retries = int(config.get("download_retries") or 0)
+        if status in ("error", "partial") and attempts <= retries and not cancelled:
+            # Automatisch noch einmal versuchen (z. B. YouTube-Aussetzer)
+            db.execute(
+                "UPDATE downloads SET status = 'queued', attempts = ?, message = ?, log = ?, done = ?, total = ? "
+                "WHERE id = ?",
+                (attempts, f"Neuer Versuch ({attempts}/{retries}) – {message}"[:500], "\n".join(lines[-300:]),
+                 done, total, job_id),
+            )
+            log.info("Download %s wird wiederholt (%s/%s)", job_id, attempts, retries)
+            if done > 0:
+                scanner.start()
+            return
         db.execute(
-            "UPDATE downloads SET status = ?, message = ?, done = ?, failed = ?, total = ?, log = ?, finished_at = ? "
-            "WHERE id = ?",
-            (status, message, done, failed, total, "\n".join(lines[-300:]), time.time(), job_id),
+            "UPDATE downloads SET status = ?, message = ?, done = ?, failed = ?, total = ?, log = ?, finished_at = ?, "
+            "attempts = ? WHERE id = ?",
+            (status, message, done, failed, total, "\n".join(lines[-300:]), time.time(), attempts, job_id),
         )
         log.info("Download %s: %s (%s)", job_id, status, message)
         if done > 0:

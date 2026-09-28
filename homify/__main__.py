@@ -111,6 +111,7 @@ def cmd_run(args) -> None:
         pid_file.write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         pass
+    os.environ["HOMIFY_BIND"] = f"{host}:{port}"  # damit die Oberfläche „Neustart nötig“ erkennt
     if args.open:
         threading.Thread(target=_wait_and_open, args=(port,), daemon=True).start()
     try:

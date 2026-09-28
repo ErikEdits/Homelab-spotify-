@@ -1,22 +1,27 @@
 // Einstieg: Anmeldung, Router, Seitenleiste, Player-Leiste, Warteschlange, Vollbild-Player
 
-import { api, loadPlaylists, on, setUnauthorizedHandler, state } from "./api.js";
+import { api, loadPlaylists, on, prefs, setUnauthorizedHandler, state } from "./api.js";
 import { artistLinks, likeButton, navigate, trackMenu } from "./components.js";
 import { downloads, downloadsView, refreshDownloads } from "./downloads.js";
+import { lyricsView } from "./lyricsview.js";
 import { player } from "./player.js";
 import { searchView } from "./search.js";
 import { appsView, settingsView } from "./settings.js";
 import {
   clear, closeMenu, cover, coverUrl, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, plural, toast,
 } from "./ui.js";
+import { applyAppearance, loadSettings, saveSettings, setting } from "./usersettings.js";
 import {
   albumView, artistView, createPlaylist, emptyState, homeView, libraryView, likedView, mixView, playlistView,
 } from "./views.js";
 
 const $ = (id) => document.getElementById(id);
+const START_PAGES = { home: "#/", search: "#/search", library: "#/library", liked: "#/liked", downloads: "#/downloads" };
+const serverName = () => state.user?.server?.name || prefs.get("serverName", "Homify");
 
 // ================================================================ Anmeldung
 async function boot() {
+  applyAppearance();  // zuletzt benutztes Design sofort (auch auf der Anmeldeseite)
   hydrateIcons();
   document.querySelectorAll(".brand-logo, .auth-logo").forEach((el) => el.append(logoSvg()));
   setUnauthorizedHandler(() => showAuth(false));
@@ -24,9 +29,12 @@ async function boot() {
     state.user = await api("/auth/me");
   } catch {
     const setup = await api("/setup").catch(() => ({ needs_setup: false }));
+    if (setup.name) prefs.set("serverName", setup.name);
     showAuth(setup.needs_setup);
     return;
   }
+  prefs.set("serverName", serverName());
+  await loadSettings().catch(() => {});
   startApp();
 }
 
@@ -35,7 +43,9 @@ function showAuth(needsSetup) {
   $("auth").hidden = false;
   player.pause();
   const form = $("auth-form");
-  $("auth-title").textContent = needsSetup ? "Willkommen bei Homify!" : "Bei Homify anmelden";
+  const name = serverName();
+  document.title = name;
+  $("auth-title").textContent = needsSetup ? `Willkommen bei ${name}!` : `Bei ${name} anmelden`;
   $("auth-hint").textContent = needsSetup ? "Lege dein Admin-Konto an. Damit meldest du dich später auf allen Geräten an." : "";
   $("auth-confirm").hidden = !needsSetup;
   form.password.autocomplete = needsSetup ? "new-password" : "current-password";
@@ -70,6 +80,10 @@ function startApp() {
   started = true;
   $("auth").hidden = true;
   $("app").hidden = false;
+  document.querySelectorAll(".brand span:last-child").forEach((el) => { el.textContent = serverName(); });
+  // Einstellung „Beim Öffnen anzeigen“
+  const start = START_PAGES[setting("start_page")];
+  if (["", "#", "#/"].includes(location.hash) && start && start !== "#/") history.replaceState(null, "", start);
   setupPlayerBar();
   setupShell();
   setupNativeBridge();
@@ -92,6 +106,7 @@ const routes = [
   [/^#\/downloads$/, downloadsView, "downloads"],
   [/^#\/settings$/, settingsView, "settings"],
   [/^#\/apps$/, appsView, "apps"],
+  [/^#\/lyrics$/, lyricsView, "lyrics"],
   [/^#\/album\/(?<id>[^/?]+)/, albumView, "album"],
   [/^#\/artist\/(?<id>[^/?]+)/, artistView, "artist"],
   [/^#\/playlist\/(?<id>\d+)/, playlistView, "playlist"],
@@ -118,6 +133,7 @@ async function route() {
   const seq = ++routeSeq;
   const name = match?.[2] || "notfound";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === name));
+  $("btn-lyrics").classList.toggle("active", name === "lyrics");
   $("topbar-search").hidden = name !== "search";
   if (name !== "search") $("search-input").value = "";
   renderSidebar();
@@ -136,10 +152,10 @@ async function route() {
   }
   if (seq !== routeSeq) { result?.destroy?.(); return; }
   current = { ...result, hash };
-  main.style.setProperty("--header-color", result.color || "#535353");
+  main.style.setProperty("--header-color", setting("dynamic_colors") !== false ? (result.color || "#535353") : "#404040");
   clear(view);
   view.append(h("div", { class: "view-bg" }), result.el);
-  document.title = result.title ? `${result.title} – Homify` : "Homify";
+  document.title = result.title ? `${result.title} – ${serverName()}` : serverName();
   view.scrollTop = scrollPositions.get(hash) || 0;
   onScroll();
   highlightPlaying();
@@ -158,6 +174,11 @@ function setupShell() {
   $("user-btn").addEventListener("click", (e) => openMenu(e, [
     { title: state.user.username },
     { label: "Einstellungen", icon: "settings", action: () => navigate("#/settings") },
+    { label: setting("private_session") ? "Private Sitzung beenden" : "Private Sitzung starten", icon: "lock", action: async () => {
+      const enable = !setting("private_session");
+      await saveSettings({ private_session: enable });
+      toast(enable ? "Private Sitzung: nichts wird im Verlauf gespeichert" : "Private Sitzung beendet");
+    } },
     { label: "Downloads", icon: "download", action: () => navigate("#/downloads") },
     { label: "Lieblingssongs", icon: "heart", action: () => navigate("#/liked") },
     { label: window.HomifyAndroid || window.homifyDesktop ? "Apps & Server-Adresse" : "Apps für Handy & PC", icon: "download", action: () => navigate("#/apps") },
@@ -173,9 +194,22 @@ function setupShell() {
     $("downloads-count").textContent = String(d.active);
   });
   on("library-changed", () => {
-    if (["#/", "", "#/library"].includes(location.hash.split("?")[0])) route();
+    if (["#/", "", "#/library", "#/liked"].includes(location.hash.split("?")[0])) route();
   });
+  on("settings", ({ keys }) => {
+    $("btn-lyrics").hidden = !setting("show_lyrics_button");
+    $("user-btn").title = setting("private_session") ? "Konto – private Sitzung aktiv" : "Konto";
+    renderTime(player.time());
+    if (keys.includes("dynamic_colors") && player.current) fetchColor(player.current);
+  });
+  $("btn-lyrics").hidden = !setting("show_lyrics_button");
+  $("user-btn").title = setting("private_session") ? "Konto – private Sitzung aktiv" : "Konto";
   document.addEventListener("keydown", onShortcut);
+}
+
+function toggleLyrics() {
+  if (location.hash === "#/lyrics") history.back();
+  else navigate("#/lyrics");
 }
 
 function renderSidebar() {
@@ -203,7 +237,13 @@ function setupPlayerBar() {
     onChange: (v) => player.seek(v * player.time().duration),
   });
   volumeSlider = makeSlider($("volume"), { onInput: (v) => player.setVolume(v), onChange: (v) => player.setVolume(v) });
-  volumeSlider.set(player.audio.muted ? 0 : player.audio.volume);
+  const renderVolume = ({ volume, muted }) => {
+    volumeSlider.set(muted ? 0 : volume);
+    $("btn-mute").replaceChildren(icon(muted || volume === 0 ? "mute" : volume < 0.5 ? "volumeLow" : "volume"));
+  };
+  renderVolume({ volume: player.volume, muted: player.muted });
+  $("btn-lyrics").addEventListener("click", toggleLyrics);
+  $("time-total").addEventListener("click", () => saveSettings({ remaining_time: !setting("remaining_time") }).catch(() => {}));
 
   $("btn-play").addEventListener("click", () => player.toggle());
   $("btn-next").addEventListener("click", () => player.next());
@@ -228,10 +268,7 @@ function setupPlayerBar() {
   on("loading", (l) => $("player").classList.toggle("loading", l));
   on("time", renderTime);
   on("mode", renderModes);
-  on("volume", ({ volume, muted }) => {
-    volumeSlider.set(muted ? 0 : volume);
-    $("btn-mute").replaceChildren(icon(muted || volume === 0 ? "mute" : volume < 0.5 ? "volumeLow" : "volume"));
-  });
+  on("volume", renderVolume);
   on("queue", () => { if (!$("queue-panel").hidden) renderQueue(); });
   renderNowPlaying(null);
   renderModes();
@@ -268,7 +305,11 @@ function renderNowPlaying() {
 
 async function fetchColor(t) {
   // Farbe des Albums für mobile Player-Leiste / Vollbild-Player
-  if (!t.album_id) return;
+  if (setting("dynamic_colors") === false || !t.album_id) {
+    document.documentElement.style.setProperty("--np-color", "#535353");
+    document.documentElement.style.setProperty("--fp-color", "#535353");
+    return;
+  }
   try {
     const a = await api(`/albums/${t.album_id}`);
     document.documentElement.style.setProperty("--np-color", a.color);
@@ -289,14 +330,16 @@ function renderTime({ current, duration }) {
     $("time-cur").textContent = fmtTime(current);
     seekSlider.set(duration ? current / duration : 0);
   }
-  $("time-total").textContent = fmtTime(duration);
+  // Einstellung „Restzeit statt Gesamtdauer“
+  const total = setting("remaining_time") && duration ? `-${fmtTime(Math.max(0, duration - current))}` : fmtTime(duration);
+  $("time-total").textContent = total;
   $("mobile-progress").style.width = `${duration ? (current / duration) * 100 : 0}%`;
   if (fpSeek && !fpSeek.dragging) {
     fpSeek.set(duration ? current / duration : 0);
     const cur = document.querySelector("#fullplayer .t-cur");
     const tot = document.querySelector("#fullplayer .t-tot");
     if (cur) cur.textContent = fmtTime(current);
-    if (tot) tot.textContent = fmtTime(duration);
+    if (tot) tot.textContent = total;
   }
 }
 
@@ -362,16 +405,19 @@ function renderQueue() {
   panel.append(h("h3", { class: "muted", style: { fontSize: "14px" } }, "Läuft gerade"), queueRow(cur, { playing: true }));
   const upcoming = player.items.slice(player.index + 1);
   const queued = upcoming.filter((t) => t._queued);
-  const rest = upcoming.filter((t) => !t._queued);
-  if (queued.length) {
-    panel.append(h("h3", { class: "muted", style: { fontSize: "14px", marginTop: "20px" } }, "Als Nächstes in der Warteschlange"));
-    queued.forEach((t) => panel.append(queueRow(t)));
-  }
-  if (rest.length) {
-    panel.append(h("h3", { class: "muted", style: { fontSize: "14px", marginTop: "20px" } },
-      player.context?.name ? `Als Nächstes von: ${player.context.name}` : "Als Nächstes"));
-    rest.slice(0, 100).forEach((t) => panel.append(queueRow(t)));
-    if (rest.length > 100) panel.append(h("p", { class: "muted" }, `… und ${rest.length - 100} weitere`));
+  const rest = upcoming.filter((t) => !t._queued && !t._autoplay);
+  const auto = upcoming.filter((t) => !t._queued && t._autoplay);
+  const group = (title, list) => {
+    if (!list.length) return;
+    panel.append(h("h3", { class: "muted", style: { fontSize: "14px", marginTop: "20px" } }, title));
+    list.slice(0, 100).forEach((t) => panel.append(queueRow(t)));
+    if (list.length > 100) panel.append(h("p", { class: "muted" }, `… und ${list.length - 100} weitere`));
+  };
+  group("Als Nächstes in der Warteschlange", queued);
+  group(player.context?.name ? `Als Nächstes von: ${player.context.name}` : "Als Nächstes", rest);
+  group("Autoplay: ähnliche Songs", auto);
+  if (!upcoming.length && setting("autoplay")) {
+    panel.append(h("p", { class: "muted", style: { fontSize: "13px", marginTop: "20px" } }, "Autoplay ist an: Danach laufen ähnliche Songs aus deiner Bibliothek weiter."));
   }
 }
 
@@ -420,6 +466,7 @@ function renderFullPlayer() {
         h("button", { class: `icon-btn ${player.repeat !== "off" ? "active" : ""}`, dataset: { mode: "repeat" }, "aria-label": "Wiederholen", onclick: () => player.cycleRepeat() }, icon(player.repeat === "one" ? "repeatOne" : "repeat"))),
       h("div", { style: { display: "flex", justifyContent: "space-between", width: "100%" } },
         h("button", { class: "icon-btn", "aria-label": "Warteschlange", onclick: () => { close(); setTimeout(toggleQueue, 50); } }, icon("queue")),
+        setting("show_lyrics_button") ? h("button", { class: "icon-btn", "aria-label": "Songtext", title: "Songtext", onclick: () => { close(); setTimeout(() => navigate("#/lyrics"), 50); } }, icon("mic")) : null,
         h("button", { class: "icon-btn", "aria-label": "Song-Radio", title: "Song-Radio", onclick: () => { close(); navigate(`#/mix/radio/${encodeURIComponent(t.id)}`); } }, icon("radio")))),
   );
   fp.querySelectorAll(".fp-meta a, .fp-context").forEach((a) => a.addEventListener("click", () => setTimeout(closeFullPlayer, 0)));
@@ -456,7 +503,7 @@ function setupNativeBridge() {
   on("track", push);
   on("state", push);
   on("time", () => { if (Date.now() - lastPush > 15000) push(); });
-  player.audio.addEventListener("seeked", push);
+  on("seeked", push);
   window.homifyNative = (cmd, arg) => {
     if (cmd === "play") player.play();
     else if (cmd === "pause") player.pause();
@@ -468,16 +515,20 @@ function setupNativeBridge() {
 
 // ================================================================ Tastenkürzel
 function onShortcut(e) {
+  if (e.key === "Escape") { closeFullPlayer(); return; }
+  if (!setting("shortcuts")) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (["input", "textarea", "select"].includes(tag) || e.target.isContentEditable) return;
   const mod = e.ctrlKey || e.metaKey;
+  const step = Number(setting("seek_step") || 10);
   if (e.code === "Space") { e.preventDefault(); player.toggle(); }
   else if (mod && e.key === "ArrowRight") { e.preventDefault(); player.next(); }
   else if (mod && e.key === "ArrowLeft") { e.preventDefault(); player.prev(); }
-  else if (mod && e.key === "ArrowUp") { e.preventDefault(); player.setVolume(player.audio.volume + 0.1); }
-  else if (mod && e.key === "ArrowDown") { e.preventDefault(); player.setVolume(player.audio.volume - 0.1); }
-  else if (e.shiftKey && e.key === "ArrowRight") { player.seek(player.audio.currentTime + 5); }
-  else if (e.shiftKey && e.key === "ArrowLeft") { player.seek(player.audio.currentTime - 5); }
+  else if (mod && e.key === "ArrowUp") { e.preventDefault(); player.setVolume(player.volume + 0.1); }
+  else if (mod && e.key === "ArrowDown") { e.preventDefault(); player.setVolume(player.volume - 0.1); }
+  else if (e.shiftKey && e.key === "ArrowRight") { player.seekBy(step); }
+  else if (e.shiftKey && e.key === "ArrowLeft") { player.seekBy(-step); }
+  else if (e.key.toLowerCase() === "l" && !mod && setting("show_lyrics_button")) toggleLyrics();
   else if ((mod && e.key.toLowerCase() === "k") || e.key === "/") {
     e.preventDefault();
     navigate("#/search");
@@ -485,7 +536,6 @@ function onShortcut(e) {
   } else if (e.key.toLowerCase() === "s" && !mod) player.toggleShuffle();
   else if (e.key.toLowerCase() === "r" && !mod) player.cycleRepeat();
   else if (e.key.toLowerCase() === "m" && !mod) player.toggleMute();
-  else if (e.key === "Escape") closeFullPlayer();
 }
 
 window.addEventListener("unhandledrejection", (e) => {

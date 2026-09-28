@@ -14,6 +14,7 @@ from typing import Any
 
 from . import db
 from . import storage as storages
+from .config import config
 from .covers import CoverStore
 from .media import probe_duration
 from .metadata import AUDIO_EXTENSIONS, TrackInfo, read_track, spotify_id_from_url
@@ -83,9 +84,10 @@ class Scanner:
             errors=0, offline_roots=[], started_at=time.time(), finished_at=None, message="",
         )
         covers = CoverStore()
+        opts = scan_options()
         existing = {
             row["path"]: row
-            for row in db.query("SELECT id, path, root, size, mtime, sig FROM tracks")
+            for row in db.query("SELECT id, path, root, size, mtime, sig, duration FROM tracks")
         }
         first_import = not existing
         id_to_path = {row["id"]: path for path, row in existing.items()}
@@ -108,15 +110,18 @@ class Scanner:
                 continue
             errors_before = st_status["errors"]
             count = 0
-            for rel, size, mtime in st.walk(on_error):
+            for rel, size, mtime in st.walk(on_error, skip=opts["ignore_folders"]):
                 name = posixpath.basename(rel)
                 if name.startswith("._") or os.path.splitext(name)[1].lower() not in AUDIO_EXTENSIONS:
                     continue
                 count += 1
                 st_status["files"] += 1
                 path = st.display_path(rel)
-                seen.add(path)
                 old = existing.get(path)
+                if old and opts["min_seconds"] and 0 < (old["duration"] or 0) < opts["min_seconds"] \
+                        and old["size"] == size and abs(old["mtime"] - mtime) <= 1:
+                    continue  # zu kurz (Einstellung) -> nicht aufnehmen
+                seen.add(path)
                 if full or not old or old["size"] != size or abs(old["mtime"] - mtime) > 1 or old["root"] != st.key:
                     todo.append((st, rel, path, size, mtime))
             had_tracks = any(r["root"] == st.key for r in existing.values())
@@ -128,20 +133,27 @@ class Scanner:
 
         st_status["phase"] = "reading"
         new_ids: dict[str, str] = {}
-        workers = 6 if all(st.kind == "local" for st in all_st) else 3
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        workers = opts["workers"] if all(st.kind == "local" for st in all_st) else min(opts["workers"], 8)
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             for i in range(0, len(todo), BATCH):
                 chunk = todo[i:i + BATCH]
-                infos = list(pool.map(lambda item: _safe_read(item[0], item[1]), chunk))
+                infos = list(pool.map(lambda item: _safe_read(item[0], item[1], opts), chunk))
                 rows = []
                 for (st, rel, path, size, mtime), info in zip(chunk, infos):
+                    if opts["min_seconds"] and 0 < info.duration < opts["min_seconds"]:
+                        seen.discard(path)  # zu kurz -> nicht in die Bibliothek
+                        continue
                     track_id = _assign_id(st, rel, path, id_to_path, seen)
                     id_to_path[track_id] = path
-                    cover_id = covers.store(info.cover) or covers.folder_cover(st, posixpath.dirname(rel))
+                    if opts["prefer_folder_cover"]:
+                        cover_id = covers.folder_cover(st, posixpath.dirname(rel)) or covers.store(info.cover)
+                    else:
+                        cover_id = covers.store(info.cover) or covers.folder_cover(st, posixpath.dirname(rel))
                     info.cover = None
                     old = existing.get(path)
                     added_at = time.time() if not first_import else mtime
-                    rows.append(_build_row(track_id, st, rel, path, size, mtime, info, cover_id, added_at))
+                    rows.append(_build_row(track_id, st, rel, path, size, mtime, info, cover_id, added_at,
+                                           folder_as_album=opts["folder_as_album"]))
                     if old:
                         st_status["updated"] += 1
                     else:
@@ -156,6 +168,15 @@ class Scanner:
             row for path, row in existing.items()
             if path not in seen and (row["root"] in healthy or row["root"] not in keys)
         ]
+        limit = max(3, len(existing) * opts["max_remove_percent"] // 100)
+        if removed and len(removed) > limit and not full and opts["max_remove_percent"] < 100:
+            # Sicherheitsgrenze: lieber nichts löschen als die halbe Bibliothek (NAS-Aussetzer o. ä.)
+            messages.append(
+                f"Sicherheitsgrenze: {len(removed)} Songs wären entfernt worden – es wurde nichts gelöscht. "
+                "Prüfe den Speicherort oder nutze „Alles neu einlesen“."
+            )
+            log.warning("Sicherheitsgrenze: %s Songs würden entfernt – übersprungen", len(removed))
+            removed = []
         if removed:
             with db.transaction() as c:
                 for row in removed:
@@ -195,7 +216,11 @@ class Scanner:
         cols = list(rows[0].keys())
         cols.remove("_artists")
         placeholders = ",".join("?" * len(cols))
-        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c not in ("id", "added_at"))
+        # Gemessene Lautheit nicht mit „leer“ überschreiben
+        updates = ",".join(
+            f"{c}=COALESCE(excluded.{c}, tracks.{c})" if c in ("gain", "album_gain") else f"{c}=excluded.{c}"
+            for c in cols if c not in ("id", "added_at")
+        )
         sql = (
             f"INSERT INTO tracks ({','.join(cols)}) VALUES ({placeholders}) "
             f"ON CONFLICT(id) DO UPDATE SET {updates}"
@@ -214,14 +239,33 @@ class Scanner:
                     )
 
 
-def _safe_read(st: Storage, rel: str) -> TrackInfo:
+def scan_options() -> dict:
+    """Einlese-Regeln aus den Einstellungen."""
+    separators = tuple(x for x in (config.get("artist_separators") or ";").split() if x) or (";",)
+    return {
+        "ignore_folders": {x.strip().lower() for x in (config.get("ignore_folders") or "").split(",") if x.strip()},
+        "min_seconds": int(config.get("min_track_seconds") or 0),
+        "workers": int(config.get("scan_workers") or 6),
+        "folder_as_album": bool(config.get("folder_as_album")),
+        "prefer_folder_cover": bool(config.get("prefer_folder_cover")),
+        "max_remove_percent": int(config.get("max_remove_percent") or 30),
+        "read": {
+            "parse_filename": bool(config.get("filename_parsing")),
+            "separators": separators,
+            "split_feat": bool(config.get("split_feat")),
+        },
+    }
+
+
+def _safe_read(st: Storage, rel: str, opts: dict | None = None) -> TrackInfo:
     local = st.local_path(rel)
+    read_opts = (opts or {}).get("read")
     try:
         if local:
-            info = read_track(local)
+            info = read_track(local, options=read_opts)
         else:
             with st.open(rel) as fh:
-                info = read_track(fh, name=rel)
+                info = read_track(fh, name=rel, options=read_opts)
     except Exception:
         log.exception("Konnte %s nicht lesen", rel)
         info = TrackInfo(title=os.path.splitext(posixpath.basename(rel))[0], readable=False)
@@ -239,7 +283,8 @@ def _assign_id(st: Storage, rel: str, path: str, id_to_path: dict[str, str], see
     return track_id
 
 
-def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, cover_id, added_at) -> dict[str, Any]:
+def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, cover_id, added_at,
+               folder_as_album: bool = True) -> dict[str, Any]:
     artists = info.artists or [UNKNOWN_ARTIST]
     first_artist = artists[0]
     album_tag = info.album.strip()
@@ -250,7 +295,7 @@ def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, c
     elif album_tag:
         album, album_key = album_tag, make_id("dir", parent, album_tag)
     else:
-        album = posixpath.basename(parent) if parent else UNKNOWN_ALBUM
+        album = posixpath.basename(parent) if parent and folder_as_album else UNKNOWN_ALBUM
         album_key = make_id("art", first_artist, album)
     album_artist = album_artist_tag or first_artist
     artist = ", ".join(artists)
@@ -280,6 +325,8 @@ def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, c
         "cover_id": cover_id,
         "isrc": info.isrc,
         "spotify_id": spotify_id_from_url(info.source_url),
+        "gain": info.gain,
+        "album_gain": info.album_gain,
         # Wiedererkennung verschobener Dateien – ohne Ordner/Album, die sich beim Verschieben ändern können
         "sig": make_id(title, artist, str(round(info.duration))),
         "search": norm(f"{title} {artist} {album} {album_artist}"),

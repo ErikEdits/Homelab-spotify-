@@ -9,6 +9,9 @@ import { player } from "./player.js";
 import {
   clear, confirmDialog, cover, debounce, fmtDuration, h, icon, mosaic, openMenu, plural, prompt, toast,
 } from "./ui.js";
+import { confirmDelete, setting } from "./usersettings.js";
+
+const show = (key) => setting(key) !== false;
 
 // ---------------------------------------------------------------- Hilfen
 function inner(...children) { return h("div", { class: "view-inner" }, ...children); }
@@ -67,7 +70,7 @@ export function emptyState(iconName, title, text, action) {
 
 // ---------------------------------------------------------------- Startseite
 export async function homeView() {
-  const data = await api("/home");
+  const data = await api(`/home?limit=${Number(setting("home_items") || 12)}`);
   const root = inner();
   root.append(h("h1", { class: "greeting" }, greeting()));
 
@@ -107,26 +110,26 @@ export async function homeView() {
       addQuick(cover(a.cover, { size: 128 }), a.name, `#/album/${a.id}`, () => playAlbum(a.id));
     }
   }
-  root.append(quick);
+  if (show("home_quick")) root.append(quick);
 
   const mixes = [
     { id: "random:", name: "Zufallsmix", subtitle: "Quer durch deine Bibliothek", covers: data.discover.map((a) => a.cover).filter(Boolean).slice(0, 4) },
     ...data.mixes,
   ];
   root.append(
-    shelf("Zuletzt gehört", data.recent_albums.map((a) => albumCard(a))),
-    shelf("Deine Mixe", mixes.map(mixCard)),
-    shelf("Neu in deiner Bibliothek", data.new_albums.map((a) => albumCard(a)), { href: "#/library?tab=albums&sort=added" }),
+    show("home_recent") ? shelf("Zuletzt gehört", data.recent_albums.map((a) => albumCard(a))) : null,
+    show("home_mixes") ? shelf("Deine Mixe", mixes.map(mixCard)) : null,
+    show("home_new") ? shelf("Neu in deiner Bibliothek", data.new_albums.map((a) => albumCard(a)), { href: "#/library?tab=albums&sort=added" }) : null,
   );
-  if (data.top_tracks.length) {
+  if (show("home_top_tracks") && data.top_tracks.length) {
     root.append(h("section", { class: "section" },
       h("div", { class: "section-head" }, h("h2", {}, "Deine Top-Songs")),
       trackList(data.top_tracks, { context: { type: "top", id: "top", name: "Deine Top-Songs", href: "#/" } })));
   }
   root.append(
-    shelf("Deine Künstler", data.top_artists.map(artistCard), { href: "#/library?tab=artists" }),
-    shelf("Deine Playlists", data.playlists.map(playlistCard), { href: "#/library?tab=playlists" }),
-    shelf("Entdecken", data.discover.map((a) => albumCard(a))),
+    show("home_artists") ? shelf("Deine Künstler", data.top_artists.map(artistCard), { href: "#/library?tab=artists" }) : null,
+    show("home_playlists") ? shelf("Deine Playlists", data.playlists.map(playlistCard), { href: "#/library?tab=playlists" }) : null,
+    show("home_discover") ? shelf("Entdecken", data.discover.map((a) => albumCard(a))) : null,
     h("p", { class: "subtle", style: { marginTop: "24px", fontSize: "12px" } },
       `${plural(data.stats.tracks, "Song", "Songs")} · ${plural(data.stats.albums, "Album", "Alben")} · ${plural(data.stats.artists, "Künstler", "Künstler")} · ${fmtDuration(data.stats.duration)}`),
   );
@@ -136,8 +139,9 @@ export async function homeView() {
 
 // ---------------------------------------------------------------- Bibliothek
 export async function libraryView(_params, query) {
-  const tab = query.get("tab") || "playlists";
-  const sort = query.get("sort") || (tab === "albums" ? "name" : "title");
+  const tab = query.get("tab") || setting("library_tab") || "playlists";
+  const defaultSort = (t) => (t === "albums" ? setting("album_sort") || "name" : setting("song_sort") || "title");
+  const sort = query.get("sort") || defaultSort(tab);
   const root = inner(h("h1", { class: "page-title" }, "Deine Bibliothek"));
   const tabs = h("div", { class: "toolbar" });
   const setQuery = (params) => {
@@ -146,7 +150,7 @@ export async function libraryView(_params, query) {
     navigate(`#/library?${q.toString()}`);
   };
   for (const [key, label] of [["playlists", "Playlists"], ["albums", "Alben"], ["artists", "Künstler"], ["songs", "Songs"]]) {
-    tabs.append(h("button", { class: `chip ${tab === key ? "active" : ""}`, onclick: () => setQuery({ tab: key, sort: key === "albums" ? "name" : "title" }) }, label));
+    tabs.append(h("button", { class: `chip ${tab === key ? "active" : ""}`, onclick: () => setQuery({ tab: key, sort: defaultSort(key) }) }, label));
   }
   tabs.append(h("div", { class: "spacer" }));
   const filter = h("input", { class: "input", type: "search", placeholder: "In Bibliothek filtern", "aria-label": "Filtern" });
@@ -329,7 +333,7 @@ export async function playlistView({ id }) {
     navigate(`#/playlist/${p.id}`);
   };
   const remove = async () => {
-    if (!await confirmDialog("Playlist löschen?", `„${p.name}“ wird gelöscht. Die Songs bleiben in deiner Bibliothek.`, { okLabel: "Löschen", danger: true })) return;
+    if (!await confirmDelete(() => confirmDialog("Playlist löschen?", `„${p.name}“ wird gelöscht. Die Songs bleiben in deiner Bibliothek.`, { okLabel: "Löschen", danger: true }))) return;
     await api(`/playlists/${p.id}`, { method: "DELETE" });
     await loadPlaylists();
     navigate("#/library");
@@ -406,7 +410,7 @@ export async function likedView() {
 // ---------------------------------------------------------------- Mixe & Radio
 export async function mixView({ kind, value }) {
   value = decodeURIComponent(value || "");
-  const tracks = await api(`/mix/${encodeURIComponent(kind)}?value=${encodeURIComponent(value)}`);
+  const tracks = await api(`/mix/${encodeURIComponent(kind)}?value=${encodeURIComponent(value)}&limit=${Number(setting("mix_size") || 60)}`);
   let title = "Zufallsmix", type = "Mix";
   if (kind === "genre") title = `${value} Mix`;
   if (kind === "radio") { title = tracks[0] ? `${tracks[0].title} Radio` : "Song-Radio"; type = "Radio"; }

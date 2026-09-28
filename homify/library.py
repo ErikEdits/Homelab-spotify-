@@ -14,7 +14,7 @@ from .textutil import norm
 TRACK_COLS = (
     "t.id, t.title, t.artist, t.artists, t.album, t.album_id, t.album_artist, t.track_no, t.disc_no, "
     "t.year, t.genre, t.duration, t.codec, t.mime, t.bitrate, t.sample_rate, t.cover_id, t.added_at, "
-    "t.spotify_id"
+    "t.spotify_id, t.gain, t.album_gain"
 )
 
 
@@ -50,6 +50,7 @@ def tracks_json(rows: list[dict[str, Any]], user_id: int | None) -> list[dict[st
             "track_no": r["track_no"], "disc_no": r["disc_no"], "year": r["year"], "genre": r["genre"],
             "duration": r["duration"], "codec": r["codec"], "mime": r["mime"], "bitrate": r["bitrate"],
             "sample_rate": r["sample_rate"], "cover": r["cover_id"], "added_at": r["added_at"],
+            "gain": r.get("gain"), "album_gain": r.get("album_gain"),
             "liked": r["id"] in liked,
         }
         for extra in ("entry_id", "entry_added", "played_at", "liked_at", "plays"):
@@ -301,14 +302,14 @@ def recent_tracks(user_id: int, limit: int = 30) -> list[dict[str, Any]]:
     return tracks_json(rows, user_id)
 
 
-def home(user_id: int) -> dict[str, Any]:
+def home(user_id: int, limit: int = 12) -> dict[str, Any]:
     recent_albums = db.query(
         "SELECT a.*, MAX(p.played_at) AS last FROM plays p JOIN tracks t ON t.id = p.track_id "
-        "JOIN albums a ON a.id = t.album_id WHERE p.user_id = ? GROUP BY a.id ORDER BY last DESC LIMIT 12",
-        (user_id,),
+        "JOIN albums a ON a.id = t.album_id WHERE p.user_id = ? GROUP BY a.id ORDER BY last DESC LIMIT ?",
+        (user_id, limit),
     )
-    new_albums = db.query("SELECT * FROM albums ORDER BY added_at DESC LIMIT 12")
-    discover = db.query("SELECT * FROM albums ORDER BY RANDOM() LIMIT 12")
+    new_albums = db.query("SELECT * FROM albums ORDER BY added_at DESC LIMIT ?", (limit,))
+    discover = db.query("SELECT * FROM albums ORDER BY RANDOM() LIMIT ?", (limit,))
     since = time.time() - 60 * 86400
     top_tracks = db.query(
         f"SELECT {TRACK_COLS}, COUNT(p.id) AS plays FROM plays p JOIN tracks t ON t.id = p.track_id "
@@ -317,19 +318,19 @@ def home(user_id: int) -> dict[str, Any]:
     )
     top_artists = db.query(
         "SELECT ar.*, COUNT(p.id) AS plays FROM plays p JOIN track_artists ta ON ta.track_id = p.track_id "
-        "JOIN artists ar ON ar.id = ta.artist_id WHERE p.user_id = ? GROUP BY ar.id ORDER BY plays DESC LIMIT 12",
-        (user_id,),
+        "JOIN artists ar ON ar.id = ta.artist_id WHERE p.user_id = ? GROUP BY ar.id ORDER BY plays DESC LIMIT ?",
+        (user_id, limit),
     )
     if len(top_artists) < 6:
-        top_artists = db.query("SELECT * FROM artists ORDER BY track_count DESC LIMIT 12")
+        top_artists = db.query("SELECT * FROM artists ORDER BY track_count DESC LIMIT ?", (limit,))
     return {
         "recent_albums": album_json(recent_albums),
         "new_albums": album_json(new_albums),
         "discover": album_json(discover),
         "top_tracks": tracks_json(top_tracks, user_id),
         "top_artists": artist_json(top_artists),
-        "mixes": mixes(),
-        "playlists": user_playlists(user_id)[:8],
+        "mixes": mixes()[:limit],
+        "playlists": user_playlists(user_id)[:limit],
         "liked_count": db.query_one("SELECT COUNT(*) AS n FROM likes WHERE user_id = ?", (user_id,))["n"],
         "stats": stats(),
     }

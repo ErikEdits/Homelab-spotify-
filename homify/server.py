@@ -6,6 +6,7 @@ import io
 import logging
 import json
 import mimetypes
+import re
 import os
 import shutil
 import socket
@@ -25,15 +26,19 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, db, library, media, remote
+from . import APP_NAME, __version__, auth, backup, db, library, media, remote, user_prefs
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
 from .downloader import downloads
+from .loudness import analyzer
 from .migrate import migration
 from .scanner import scanner
+from .settings_schema import EQ_PRESET_VALUES, SETTINGS, schema_json
 from .spotify import invalidate_library_index
 from .spotify import search as spotify_search
+from .lyrics import parse_lyrics
+from .metadata import read_embedded_lyrics
 from .streaming import ranged_response
 from .tools import BridgeError, bridge, tools
 
@@ -52,10 +57,11 @@ for _mime, _ext in (("text/javascript", ".js"), ("text/css", ".css"), ("image/sv
 # --------------------------------------------------------------------------- #
 
 class Scheduler:
-    """Scannt die Bibliothek regelmäßig (neue Dateien auf dem NAS werden automatisch gefunden)."""
+    """Hintergrund-Aufgaben: regelmäßiger Scan, Sicherung, Aufräumen, spotDL-Update, Lautheit."""
 
     def __init__(self):
         self._stop = threading.Event()
+        self._last_hourly = 0.0
 
     def start(self) -> None:
         threading.Thread(target=self._loop, daemon=True, name="scheduler").start()
@@ -64,12 +70,44 @@ class Scheduler:
         self._stop.set()
 
     def _loop(self) -> None:
-        scanner.start()
+        if config.get("scan_on_start"):
+            scanner.start()
+        else:
+            analyzer.kick()
         while not self._stop.wait(60):
-            interval = int(config.get("scan_interval_minutes") or 0)
-            last = scanner.status.get("finished_at") or 0
-            if interval > 0 and not scanner.status["running"] and time.time() - last > interval * 60:
-                scanner.start()
+            try:
+                interval = int(config.get("scan_interval_minutes") or 0)
+                last = scanner.status.get("finished_at") or 0
+                if interval > 0 and not scanner.status["running"] and time.time() - last > interval * 60:
+                    scanner.start()
+                if time.time() - self._last_hourly > 3600:
+                    self._last_hourly = time.time()
+                    self.hourly()
+            except Exception:  # pragma: no cover - Hintergrund darf nie sterben
+                log.exception("Zeitplaner-Fehler")
+            finally:
+                db.close()
+
+    @staticmethod
+    def hourly() -> None:
+        backup.daily()
+        downloads.prune_history()
+        days = int(config.get("history_days") or 0)
+        if days:
+            db.execute("DELETE FROM plays WHERE played_at < ?", (time.time() - days * 86400,))
+        analyzer.kick()
+        if config.get("spotdl_auto_update") and tools.installed() and not downloads.active_count():
+            stamp = DATA_DIR / "tools" / "last-update"
+            try:
+                last = stamp.stat().st_mtime
+            except OSError:
+                last = 0
+            if time.time() - last > 7 * 86400:
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+                log.info("Wöchentliches spotDL-Update")
+                bridge.stop()
+                tools.install_async(upgrade=True)
 
 
 scheduler = Scheduler()
@@ -78,7 +116,9 @@ scheduler = Scheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    apply_runtime_settings()
     scanner.listeners.append(invalidate_library_index)
+    scanner.listeners.append(lambda _status: analyzer.kick())
     downloads.start()
     scheduler.start()
     log.info("%s %s läuft", APP_NAME, __version__)
@@ -123,7 +163,7 @@ class Credentials(BaseModel):
 
 def _set_cookie(response: Response, request: Request, token: str) -> None:
     response.set_cookie(
-        auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+        auth.COOKIE, token, max_age=auth.session_days() * 86400, httponly=True, samesite="lax",
         secure=request.url.scheme == "https", path="/",
     )
 
@@ -134,7 +174,8 @@ def _client_ip(request: Request) -> str:
 
 @app.get("/api/setup")
 def setup_status():
-    return {"needs_setup": auth.user_count() == 0, "app": APP_NAME, "version": __version__}
+    return {"needs_setup": auth.user_count() == 0, "app": APP_NAME, "version": __version__,
+            "name": config.get("server_name") or APP_NAME}
 
 
 @app.post("/api/setup")
@@ -169,7 +210,32 @@ def logout(request: Request, response: Response):
 
 @app.get("/api/auth/me")
 def me(user: dict = Depends(auth.current_user)):
-    return user
+    return {**user, "server": {"name": config.get("server_name") or APP_NAME, "version": __version__,
+                               "allow_file_download": bool(config.get("allow_file_download"))}}
+
+
+# --------------------------------------------------------------------------- #
+# Einstellungen: Liste aller 100, eigene (pro Benutzer)
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/settings/schema")
+def settings_schema(user: dict = Depends(auth.current_user)):
+    return {"settings": schema_json(), "eq_presets": EQ_PRESET_VALUES, "count": len(SETTINGS)}
+
+
+@app.get("/api/me/settings")
+def my_settings(user: dict = Depends(auth.current_user)):
+    return user_prefs.get_all(user["id"])
+
+
+@app.put("/api/me/settings")
+def put_my_settings(values: dict[str, Any], user: dict = Depends(auth.current_user)):
+    return user_prefs.update(user["id"], values)
+
+
+@app.delete("/api/me/settings")
+def reset_my_settings(user: dict = Depends(auth.current_user)):
+    return user_prefs.reset_all(user["id"])
 
 
 class PasswordChange(BaseModel):
@@ -193,8 +259,8 @@ def change_password(body: PasswordChange, request: Request, response: Response,
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/home")
-def home(user: dict = Depends(auth.current_user)):
-    data = library.home(user["id"])
+def home(limit: int = 12, user: dict = Depends(auth.current_user)):
+    data = library.home(user["id"], min(max(limit, 4), 30))
     data["scan"] = scanner.status
     return data
 
@@ -277,7 +343,8 @@ def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "
     t = _track_or_404(track_id)
     st, rel = _source(t)
     headers = {"Cache-Control": "private, max-age=86400"}
-    if transcode or (quality == "low" and media.needs_transcode_for_quality(t["bitrate"], "low")):
+    wanted = quality if quality in media.QUALITIES else "high"
+    if transcode or (quality in media.QUALITIES and media.needs_transcode_for_quality(t["bitrate"], quality)):
         local = st.local_path(rel)
         temp: list[str] = []
 
@@ -288,7 +355,7 @@ def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "
             return temp[0]
 
         try:
-            out = media.transcode(t, "low" if quality == "low" else "high", source=source)
+            out, mime = media.transcode(t, wanted, source=source)
         except media.TranscodeError as exc:
             raise HTTPException(500, f"Umwandlung fehlgeschlagen: {exc}") from exc
         except OSError as exc:
@@ -299,13 +366,45 @@ def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "
                     os.remove(f)
                 except OSError:
                     pass
-        return FileResponse(out, media_type="audio/mpeg", headers=headers)
+        return FileResponse(out, media_type=mime, headers=headers)
     mime = (t["mime"] or "application/octet-stream").split(";")[0]
     return _serve(request, st, rel, mime, headers)
 
 
+@app.get("/api/tracks/{track_id}/lyrics")
+def lyrics(track_id: str, user: dict = Depends(auth.current_user)):
+    """Songtext: .lrc/.txt neben der Datei (mit Zeitstempeln) oder aus den Tags."""
+    t = _track_or_404(track_id)
+    st, rel = _source(t)
+    base = os.path.splitext(rel)[0]
+    for ext in (".lrc", ".LRC", ".txt"):
+        try:
+            with st.open(base + ext) as fh:
+                data = fh.read(512 * 1024).decode("utf-8-sig", errors="replace")
+            parsed = parse_lyrics(data)
+            if parsed["lines"]:
+                return parsed
+        except OSError:
+            continue
+    local = st.local_path(rel)
+    try:
+        if local:
+            text = read_embedded_lyrics(local)
+        else:
+            with st.open(rel) as fh:
+                text = read_embedded_lyrics(fh, name=rel)
+    except OSError:
+        text = ""
+    parsed = parse_lyrics(text)
+    if not parsed["lines"]:
+        raise HTTPException(404, "Kein Songtext vorhanden")
+    return parsed
+
+
 @app.get("/api/tracks/{track_id}/file")
 def download_file(track_id: str, request: Request, user: dict = Depends(auth.current_user)):
+    if not config.get("allow_file_download") and not user["is_admin"]:
+        raise HTTPException(403, "Herunterladen aufs Gerät ist ausgeschaltet")
     t = _track_or_404(track_id)
     st, rel = _source(t)
     name = os.path.basename(rel)
@@ -355,8 +454,8 @@ def artist_tracks(artist_id: str, user: dict = Depends(auth.current_user)):
 
 
 @app.get("/api/mix/{kind}")
-def mix(kind: str, value: str = "", user: dict = Depends(auth.current_user)):
-    return library.mix_tracks(kind, value, user["id"])
+def mix(kind: str, value: str = "", limit: int = 60, user: dict = Depends(auth.current_user)):
+    return library.mix_tracks(kind, value, user["id"], min(max(limit, 5), 300))
 
 
 # --------------------------------------------------------------------------- #
@@ -541,9 +640,24 @@ def list_downloads(user: dict = Depends(auth.current_user)):
                 "SELECT id FROM tracks WHERE spotify_id IN (%s)" % ",".join("?" * len(ids)), ids
             )
             job["track_ids"] = [r["id"] for r in rows]
+            if job["track_ids"] and not job.get("auto_liked") and not scanner.status.get("running"):
+                _auto_like(job)
         if not user["is_admin"] and job.get("user_id") != user["id"]:
             job.pop("log", None)
     return {"jobs": jobs, "active": downloads.active_count(), "scan": scanner.status}
+
+
+def _auto_like(job: dict[str, Any]) -> None:
+    """„Geholte Songs automatisch zu Lieblingssongs“: einmal pro fertigem Download prüfen."""
+    db.execute("UPDATE downloads SET auto_liked = 1 WHERE id = ?", (job["id"],))
+    job["auto_liked"] = 1
+    uid = job.get("user_id")
+    if not uid or not user_prefs.get(uid, "auto_like_downloads"):
+        return
+    now = time.time()
+    with db.transaction() as c:
+        for tid in job["track_ids"]:
+            c.execute("INSERT OR IGNORE INTO likes (user_id, track_id, liked_at) VALUES (?, ?, ?)", (uid, tid, now))
 
 
 @app.post("/api/downloads")
@@ -652,6 +766,9 @@ def get_settings(user: dict = Depends(auth.admin_user)):
             "storage": _storage_info(),
             "migration": migration.status,
             "remote": remote.info(port),
+            "restart_needed": restart_needed(),
+            "loudness": {**analyzer.status, "remaining": analyzer.remaining()},
+            "backups": backup.list_backups(),
         },
     }
 
@@ -659,11 +776,28 @@ def get_settings(user: dict = Depends(auth.admin_user)):
 @app.put("/api/settings")
 def put_settings(values: dict[str, Any], user: dict = Depends(auth.admin_user)):
     old_dirs = config.music_dirs
+    scan_keys = {"ignore_folders", "min_track_seconds", "folder_as_album", "filename_parsing", "split_feat",
+                 "artist_separators", "prefer_folder_cover"}
+    before = {k: config.get(k) for k in scan_keys}
     config.update({k: v for k, v in values.items() if k not in STORAGE_KEYS})  # Speicherort nur über /api/storage
-    media.find_ffmpeg(refresh=True)
+    apply_runtime_settings()
     if config.music_dirs != old_dirs:
         scanner.start()
+    elif any(config.get(k) != before[k] for k in scan_keys):
+        scanner.start(full=True)  # Einlese-Regeln geändert -> alles neu auswerten
     return get_settings(user)
+
+
+def apply_runtime_settings() -> None:
+    """Einstellungen, die sofort wirken sollen (ohne Neustart)."""
+    level = getattr(logging, str(config.get("log_level") or "INFO"), logging.INFO)
+    logging.getLogger().setLevel(level)
+    media.find_ffmpeg(refresh=True)
+
+
+def restart_needed() -> bool:
+    running = os.environ.get("HOMIFY_BIND", "")
+    return bool(running) and running != f"{config.get('host')}:{config.get('port')}"
 
 
 # --------------------------------------------------------------------------- #
@@ -770,23 +904,27 @@ def storage_cancel(user: dict = Depends(auth.admin_user)):
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/backup")
-def backup(user: dict = Depends(auth.admin_user)):
-    buf = io.BytesIO()
-    snapshot = DATA_DIR / "tmp" / "backup.db"
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
-    if snapshot.exists():
-        snapshot.unlink()
-    dst = sqlite3.connect(str(snapshot))
-    db.conn().backup(dst)
-    dst.close()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(snapshot, "homify.db")
-        z.writestr("config.json", json.dumps(config.public(), indent=2, ensure_ascii=False))  # ohne Passwörter
-        z.writestr("homify-backup.txt", f"Homify {__version__} Sicherung vom {time.strftime('%d.%m.%Y %H:%M')}")
-    snapshot.unlink()
+def download_backup(user: dict = Depends(auth.admin_user)):
     name = time.strftime("homify-sicherung-%Y-%m-%d.zip")
-    return Response(buf.getvalue(), media_type="application/zip",
+    return Response(backup.create_zip_bytes(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/backups")
+def create_backup_now(user: dict = Depends(auth.admin_user)):
+    path = backup.create_file()
+    backup.prune(int(config.get("backup_keep") or 7))
+    return {"name": path.name, "backups": backup.list_backups()}
+
+
+@app.get("/api/backups/{name}")
+def download_stored_backup(name: str, user: dict = Depends(auth.admin_user)):
+    if not re.fullmatch(r"homify-sicherung-[\w-]+\.zip", name):
+        raise HTTPException(400, "Ungültiger Name")
+    path = backup.BACKUP_DIR / name
+    if not path.is_file():
+        raise HTTPException(404, "Sicherung nicht gefunden")
+    return FileResponse(path, media_type="application/zip", filename=name)
 
 
 @app.post("/api/backup/restore")
@@ -908,7 +1046,7 @@ class UserIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=4, max_length=256)
     is_admin: bool = False
-    can_download: bool = True
+    can_download: bool | None = None  # None = Einstellung „Neue Benutzer dürfen herunterladen“
 
 
 class UserPatch(BaseModel):

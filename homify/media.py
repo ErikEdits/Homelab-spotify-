@@ -16,10 +16,14 @@ from .config import DATA_DIR, IS_WINDOWS, config
 log = logging.getLogger("homify.media")
 
 TRANSCODE_DIR = DATA_DIR / "cache" / "transcode"
-QUALITIES = {
-    # name: (ffmpeg-Argumente, maximale Quell-Bitrate, ab der umgewandelt wird)
-    "high": (["-c:a", "libmp3lame", "-q:a", "0"], None),
-    "low": (["-c:a", "libmp3lame", "-b:a", "128k"], 170_000),
+# Qualitätsstufen (kbit/s). „high“/„low“ kommen aus den Einstellungen.
+QUALITIES = ("high", "normal", "low", "minimal")
+
+# Zielformat: (Encoder-Argumente, ffmpeg-Format, Dateiendung, MIME-Typ)
+FORMATS = {
+    "mp3": (["-c:a", "libmp3lame"], "mp3", "mp3", "audio/mpeg"),
+    "aac": (["-c:a", "aac", "-movflags", "+faststart"], "ipod", "m4a", "audio/mp4"),
+    "opus": (["-c:a", "libopus", "-vbr", "on"], "ogg", "ogg", "audio/ogg"),
 }
 
 _ffmpeg_cache: str | None = None
@@ -90,47 +94,79 @@ def probe_duration(path: str) -> float:
     return 0.0
 
 
+def quality_kbps(quality: str) -> int:
+    if quality == "high":
+        return int(config.get("transcode_high_kbps") or 320)
+    if quality == "low":
+        return int(config.get("transcode_low_kbps") or 128)
+    if quality == "minimal":
+        return 64
+    return 192  # normal
+
+
 def needs_transcode_for_quality(bitrate: int, quality: str) -> bool:
+    """Muss für diese Qualitätsstufe umgewandelt werden? (Quelle deutlich größer als das Ziel)"""
     if quality not in QUALITIES:
         return False
-    limit = QUALITIES[quality][1]
-    return limit is not None and (bitrate or 10**9) > limit
+    return (bitrate or 10**9) > quality_kbps(quality) * 1000 * 1.15
+
+
+def output_format() -> tuple[list[str], str, str, str]:
+    return FORMATS.get(config.get("transcode_format") or "mp3", FORMATS["mp3"])
+
+
+_sem: threading.BoundedSemaphore | None = None
+_sem_size = 0
+_sem_guard = threading.Lock()
+
+
+def _semaphore() -> threading.BoundedSemaphore:
+    """Begrenzt gleichzeitige Umwandlungen (Einstellung „Gleichzeitige Umwandlungen“)."""
+    global _sem, _sem_size
+    size = max(1, int(config.get("max_transcodes") or 2))
+    with _sem_guard:
+        if _sem is None or size != _sem_size:
+            _sem, _sem_size = threading.BoundedSemaphore(size), size
+        return _sem
 
 
 class TranscodeError(RuntimeError):
     pass
 
 
-def transcode(track: dict, quality: str = "high", source: Callable[[], str] | None = None) -> Path:
+def transcode(track: dict, quality: str = "high", source: Callable[[], str] | None = None) -> tuple[Path, str]:
     """
-    Wandelt einen Song in MP3 um (Ergebnis wird zwischengespeichert).
+    Wandelt einen Song um (Format und Bitrate aus den Einstellungen, Ergebnis wird zwischengespeichert).
     source: liefert den lokalen Pfad der Quelldatei (bei NAS-Dateien eine temporäre Kopie).
+    Rückgabe: (Datei, MIME-Typ)
     """
     if quality not in QUALITIES:
         quality = "high"
     ff = find_ffmpeg()
     if not ff:
         raise TranscodeError("ffmpeg wurde nicht gefunden")
-    key = f"{track['id']}_{quality}_{int(track.get('mtime') or 0)}"
-    out = TRANSCODE_DIR / key[:2] / f"{key}.mp3"
+    fmt = config.get("transcode_format") or "mp3"
+    args, container, ext, mime = output_format()
+    kbps = quality_kbps(quality)
+    key = f"{track['id']}_{fmt}{kbps}_{int(track.get('mtime') or 0)}"
+    out = TRANSCODE_DIR / key[:2] / f"{key}.{ext}"
     if out.exists():
         _touch(out)
-        return out
+        return out, mime
     with _locks_guard:
         lock = _locks.setdefault(key, threading.Lock())
-    with lock:
+    with lock, _semaphore():
         if out.exists():
-            return out
+            return out, mime
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part")
-        args, _ = QUALITIES[quality]
         input_path = source() if source else track["path"]
         cmd = [ff, "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", input_path,
                "-map", "0:a:0", "-vn", "-map_metadata", "-1"]
-        if (track.get("sample_rate") or 0) > 48000 or track.get("codec") == "dsd":
+        if fmt == "mp3" and ((track.get("sample_rate") or 0) > 48000 or track.get("codec") == "dsd"):
             cmd += ["-ar", "44100"]
-        cmd += args + ["-f", "mp3", str(tmp)]
-        log.info("Wandle um: %s (%s)", track["path"], quality)
+        cmd += args + ["-b:a", f"{kbps}k", "-f", container, str(tmp)]
+        log.info("Wandle um: %s (%s, %s kbit/s)", track["path"], fmt, kbps)
         try:
             res = run_hidden(cmd, capture_output=True, text=True, timeout=900, encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired as exc:
@@ -141,7 +177,7 @@ def transcode(track: dict, quality: str = "high", source: Callable[[], str] | No
             raise TranscodeError((res.stderr or "ffmpeg-Fehler").strip()[-500:])
         os.replace(tmp, out)
     threading.Thread(target=cleanup_cache, daemon=True).start()
-    return out
+    return out, mime
 
 
 def _touch(path: Path) -> None:
@@ -151,10 +187,14 @@ def _touch(path: Path) -> None:
         pass
 
 
+def _cache_files():
+    return (p for p in TRANSCODE_DIR.rglob("*") if p.is_file() and p.suffix != ".part")
+
+
 def cache_size() -> int:
     total = 0
     if TRANSCODE_DIR.exists():
-        for p in TRANSCODE_DIR.rglob("*.mp3"):
+        for p in _cache_files():
             try:
                 total += p.stat().st_size
             except OSError:
@@ -167,7 +207,7 @@ def cleanup_cache() -> None:
     if not TRANSCODE_DIR.exists():
         return
     files = []
-    for p in TRANSCODE_DIR.rglob("*.mp3"):
+    for p in _cache_files():
         try:
             st = p.stat()
             files.append((st.st_mtime, st.st_size, p))
