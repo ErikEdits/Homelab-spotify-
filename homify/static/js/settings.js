@@ -436,7 +436,80 @@ function spotdlExtras(sys) {
     poll();
   });
   if (sys.tools?.running) poll();
-  return { el: extra(info, h("div", { class: "row-actions", style: { marginBottom: "12px" } }, installBtn), logBox), destroy: () => clearTimeout(timer) };
+  return {
+    el: extra(info, h("div", { class: "row-actions", style: { marginBottom: "12px" } }, installBtn), logBox, cookieBlock(sys.youtube_cookies || {})),
+    destroy: () => clearTimeout(timer),
+  };
+}
+
+/** YouTube-Cookies hochladen (Datei oder eingefügter Text) – hilft, wenn YouTube Downloads blockiert. */
+function cookieBlock(initial) {
+  const box = h("div", { class: "cookie-box" });
+  const file = h("input", { type: "file", accept: ".txt,text/plain", hidden: true });
+  const setRow = (path) => document.querySelector('.set-row[data-key="spotdl_cookie_file"]')?._set(path);
+  const saved = async (st) => {
+    setRow(st.path);
+    draw(st);
+    const failed = (await api("/downloads").catch(() => ({ jobs: [] }))).jobs.filter((j) => ["error", "partial"].includes(j.status));
+    toast(st.logged_in ? `Gespeichert: ${st.count} YouTube-Cookies` : "Gespeichert – aber ohne YouTube-Anmeldung, bitte angemeldet exportieren",
+      { error: !st.logged_in, ms: 5000 });
+    if (st.logged_in && failed.length && await confirmDialog("Fehlgeschlagene Downloads neu starten?",
+      `${plural(failed.length, "Download ist", "Downloads sind")} fehlgeschlagen. Mit den Cookies nochmal versuchen?`, { okLabel: "Neu starten" })) {
+      for (const j of failed) await api(`/downloads/${j.id}/retry`, { method: "POST" }).catch(() => {});
+      toast(`${plural(failed.length, "Download", "Downloads")} neu gestartet`);
+    }
+  };
+  const upload = async (text) => {
+    try { await saved(await api("/settings/youtube-cookies", { method: "POST", body: { text } })); }
+    catch (e) { toast(e.message, { error: true, ms: 7000 }); }
+  };
+  file.addEventListener("change", async () => {
+    const f = file.files[0];
+    file.value = "";
+    if (f) await upload(await f.text());
+  });
+  const paste = async () => {
+    const ta = h("textarea", { class: "input", rows: "8", placeholder: "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t…", spellcheck: "false", style: { fontFamily: "monospace", fontSize: "12px" } });
+    const text = await modal("Cookie-Text einfügen", h("div", {},
+      h("p", { class: "muted", style: { fontSize: "13px", marginTop: 0 } }, "Den kompletten Inhalt der cookies.txt hier einfügen (Strg + V). Homify behält nur die YouTube-Cookies."), ta), [
+      { label: "Abbrechen", value: null },
+      { label: "Speichern", primary: true, action: () => ta.value.trim() || false },
+    ]);
+    if (text) await upload(text);
+  };
+  const draw = (st) => {
+    const stateEl = !st.exists
+      ? h("span", { class: "badge" }, "keine hinterlegt")
+      : st.logged_in
+        ? h("span", { class: "badge green" }, icon("check", "sm"), "angemeldet")
+        : h("span", { class: "badge red" }, "ohne Anmeldung");
+    box.replaceChildren(
+      h("div", { class: "set-label" }, "YouTube-Cookies", stateEl),
+      h("p", { class: "set-help", style: { margin: "4px 0 10px" } },
+        st.exists
+          ? `${plural(st.count, "YouTube-Cookie", "YouTube-Cookies")} · Stand ${fmtDate(st.updated)}. Scheitern Downloads wieder mit „YouTube verlangt eine Bestätigung“, sind sie abgelaufen – einfach neu hochladen.`
+          : "Nur nötig, wenn Downloads mit „YouTube verlangt eine Bestätigung“ scheitern. Dann lädt spotDL wie ein angemeldeter YouTube-Nutzer."),
+      h("div", { class: "row-actions" },
+        h("button", { class: "btn btn-small btn-primary", type: "button", onclick: () => file.click() }, icon("download", "sm"), "Cookie-Datei hochladen"),
+        h("button", { class: "btn btn-small btn-outline", type: "button", onclick: paste }, "Text einfügen"),
+        st.exists ? h("button", { class: "btn btn-small btn-outline", type: "button", onclick: async () => {
+          const r = await api("/settings/youtube-cookies", { method: "DELETE" });
+          setRow(r.path);
+          draw(r);
+          toast("Cookies entfernt");
+        } }, "Entfernen") : null,
+        file),
+      h("details", { class: "help" }, h("summary", {}, "So bekommst du die Datei"),
+        h("ol", {},
+          h("li", {}, "In Chrome die Erweiterung „Get cookies.txt LOCALLY“ installieren (in Firefox: „cookies.txt“)."),
+          h("li", {}, "Im normalen Fenster (nicht privat) bei youtube.com angemeldet sein – am besten mit einem Zweitkonto."),
+          h("li", {}, "Auf youtube.com die Erweiterung anklicken → „Export All Cookies“. Die Datei landet im Download-Ordner."),
+          h("li", {}, "Hier „Cookie-Datei hochladen“ klicken und die Datei auswählen. Fertig."),
+          h("li", {}, "Danach bei Google nicht abmelden – sonst werden die Cookies ungültig.")),
+        h("p", { class: "muted", style: { fontSize: "12px" } }, "Homify speichert nur die YouTube-Cookies (keine Google-/Gmail-Cookies) und nur auf dem Server. Die Datei wie ein Passwort behandeln und nicht weitergeben.")));
+  };
+  draw(initial);
+  return box;
 }
 
 // ================================================================ System (Admin)

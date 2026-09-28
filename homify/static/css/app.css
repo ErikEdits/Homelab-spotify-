@@ -701,3 +701,5 @@ svg.icon { width: 24px; height: 24px; display: block; flex: none; }
   .eq-slider { height: 130px; }
 }
 .dup-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+.cookie-box { background: var(--elev-2); border-radius: 8px; padding: 14px 16px; margin: 4px 0 12px; }
+.cookie-box .help { margin-bottom: 0; }

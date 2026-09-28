@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, backup, db, dedup, library, media, remote, user_prefs
+from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, remote, user_prefs
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
@@ -772,6 +772,7 @@ def get_settings(user: dict = Depends(auth.admin_user)):
             "loudness": {**analyzer.status, "remaining": analyzer.remaining()},
             "backups": backup.list_backups(),
             "duplicates": dedup.count(),
+            "youtube_cookies": cookies.status(),
         },
     }
 
@@ -973,6 +974,21 @@ async def restore(request: Request, keep_storage: bool = True, user: dict = Depe
 def scan(full: bool = False, user: dict = Depends(auth.admin_user)):
     scanner.start(full=full)
     return scanner.status
+
+
+# YouTube-Cookies für spotDL (hilft, wenn YouTube Downloads als „Bot“ blockiert)
+class CookieText(BaseModel):
+    text: str = Field(max_length=2_000_000)
+
+
+@app.post("/api/settings/youtube-cookies")
+def upload_youtube_cookies(body: CookieText, user: dict = Depends(auth.admin_user)):
+    return cookies.save(body.text)
+
+
+@app.delete("/api/settings/youtube-cookies")
+def delete_youtube_cookies(user: dict = Depends(auth.admin_user)):
+    return cookies.remove()
 
 
 # Doppelte Dateien: ausgeblendet, der Admin kann sie löschen, um Platz auf dem NAS zu sparen
