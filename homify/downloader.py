@@ -21,7 +21,7 @@ from .media import find_ffmpeg
 from .metadata import AUDIO_EXTENSIONS, read_track, spotify_id_from_url
 from .scanner import scanner
 from .textutil import dup_key
-from .tools import child_env, venv_python
+from .tools import SPOTDL_RUNNER, child_env, venv_python
 
 log = logging.getLogger("homify.downloader")
 
@@ -40,13 +40,30 @@ FRIENDLY_ERRORS = [
      "Spotify-Limit erreicht – später nochmal versuchen oder eigene Spotify-API-Daten eintragen."),
     (re.compile(r"ProxyError|ConnectionError|Max retries|NameResolution|getaddrinfo|timed out", re.I),
      "Keine Internetverbindung zu Spotify/YouTube."),
+    (re.compile(r"JSONDecodeError|Expecting value", re.I),
+     "YouTube Music hat statt Daten eine Fehlerseite geschickt – meist eine vorübergehende Sperre nach vielen "
+     "Downloads. Homify sucht dann automatisch über YouTube; klappt auch das nicht, in ein paar Stunden nochmal "
+     "versuchen."),
     (re.compile(r"ffmpeg", re.I), "Problem mit ffmpeg (Umwandlung)."),
     (re.compile(r"Permission|Zugriff verweigert|Access is denied", re.I),
      "Keine Schreibrechte im Download-Ordner."),
 ]
 
 
-def friendly_error(message: str) -> str:
+# Spuren des Spotify-Zugangs ohne API-Schlüssel (spotDL liest dafür den Spotify-Webplayer aus)
+SPOTIFY_FREE_TRACE = re.compile(r"spotapi|SpotipyFree|open\.spotify\.com/api/token|clienttoken\.spotify", re.I)
+SPOTIFY_BLOCKED = ("Spotify blockiert gerade den Zugang ohne API-Schlüssel. Lösung: kostenlose eigene Spotify-API-Daten "
+                   "eintragen (Einstellungen → Downloads (spotDL) → Client ID/Secret und „Offizielle Spotify-API nutzen“).")
+
+
+def friendly_error(message: str, context: str = "") -> str:
+    """Verständliche Fehlermeldung; „context“ ist die restliche spotDL-Ausgabe (verrät, wo es geklemmt hat)."""
+    if (re.search(r"JSONDecodeError|Expecting value|RequestError|BaseClientError", message)
+            and SPOTIFY_FREE_TRACE.search(context) and not config.get("spotify_use_official_api")):
+        return f"{SPOTIFY_BLOCKED} ({message[:200]})"
+    if "LookupError" in message and "YouTube Music antwortet nicht" in context:
+        return ("YouTube Music ist gerade nicht erreichbar (vorübergehend gesperrt?) und die Ersatzsuche über YouTube "
+                f"hat nichts Passendes gefunden – in ein paar Stunden nochmal versuchen. ({message[:200]})")
     for pattern, text in FRIENDLY_ERRORS:
         if pattern.search(message):
             if pattern is FRIENDLY_ERRORS[1][0] and (config.get("spotdl_cookie_file") or "").strip():
@@ -79,7 +96,7 @@ def build_command(query: str, staging: str | None = None, archive: str | None = 
     target = staging or str(STAGING_DIR / "manual")
     template = (config.get("output_template") or DEFAULT_TEMPLATE).strip().lstrip("/\\")
     cmd = [
-        str(venv_python()), "-m", "spotdl", "download", query,
+        str(venv_python()), str(SPOTDL_RUNNER), "download", query,
         "--output", os.path.join(target, template),
         "--format", config.get("download_format") or "mp3",
         "--bitrate", config.get("download_bitrate") or "auto",
@@ -461,6 +478,7 @@ class DownloadManager:
         total = max(total, done)
         failed = max(total - done, 0)
         skipped = done - new
+        context = "\n".join(lines)
         if cancelled:
             status, message = "cancelled", "Abgebrochen"
         elif done > 0 and failed == 0:
@@ -468,10 +486,10 @@ class DownloadManager:
         elif done > 0:
             status, message = "partial", f"{summary(new, skipped)}, {failed} nicht gefunden"
             if errors:
-                message = f"{message} – {friendly_error(errors[-1])}"[:500]
+                message = f"{message} – {friendly_error(errors[-1], context)}"[:500]
         else:
             status = "error"
-            message = friendly_error(errors[-1] if errors else f"spotDL beendet mit Code {code}")[:500]
+            message = friendly_error(errors[-1] if errors else f"spotDL beendet mit Code {code}", context)[:500]
             if code == 0 and not errors:
                 message = "Nichts heruntergeladen – Song nicht gefunden?"
         attempts = int(job.get("attempts") or 0) + 1

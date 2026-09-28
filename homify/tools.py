@@ -20,6 +20,7 @@ log = logging.getLogger("homify.tools")
 
 SPOTDL_VENV = Path(os.environ.get("HOMIFY_SPOTDL_VENV", DATA_DIR / "tools" / "spotdl-venv"))
 BRIDGE_SCRIPT = PACKAGE_DIR / "spotdl_bridge.py"
+SPOTDL_RUNNER = PACKAGE_DIR / "spotdl_run.py"  # startet spotDL mit Homify-Sicherungen (statt „-m spotdl“)
 
 
 def venv_python() -> Path:

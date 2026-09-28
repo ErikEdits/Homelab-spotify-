@@ -6,6 +6,7 @@ import pytest
 
 from homify import db, downloader
 from homify.downloader import DownloadManager, build_command, friendly_error, validate_query
+from homify.tools import SPOTDL_RUNNER
 
 
 @pytest.mark.parametrize("query", [
@@ -26,7 +27,8 @@ def test_invalid_queries(query):
 
 def test_build_command_contains_output_and_ffmpeg(scanned):
     cmd = build_command("https://open.spotify.com/track/abc")
-    assert cmd[1:5] == ["-m", "spotdl", "download", "https://open.spotify.com/track/abc"]
+    assert cmd[1:4] == [str(SPOTDL_RUNNER), "download", "https://open.spotify.com/track/abc"]
+    assert SPOTDL_RUNNER.exists()
     assert "--output" in cmd and "--ffmpeg" in cmd
     assert "{output-ext}" in cmd[cmd.index("--output") + 1]
 
@@ -34,6 +36,18 @@ def test_build_command_contains_output_and_ffmpeg(scanned):
 def test_friendly_errors():
     assert "YouTube Music" in friendly_error("LookupError: No results found for song: x")
     assert "Internet" in friendly_error("ProxyError: Max retries exceeded")
+
+
+def test_friendly_error_json_decode_explains_block():
+    err = "JSONDecodeError: Expecting value: line 1 column 1 (char 0)"
+    msg = friendly_error(err)
+    assert "YouTube Music" in msg and "Fehlerseite" in msg and "Expecting value" in msg
+    # kam der Fehler aus dem Spotify-Zugang ohne API-Schlüssel, steht das dabei – mit Lösung
+    trace = "│ /venv/lib/site-packages/spotapi/http/request.py:181 in parse_response │"
+    assert "Spotify blockiert" in friendly_error(err, trace) and "Client ID" in friendly_error(err, trace)
+    # YouTube Music gesperrt und auch die Ersatzsuche fand nichts
+    notice = "Homify-Hinweis: YouTube Music antwortet nicht (JSONDecodeError) – suche stattdessen über YouTube"
+    assert "Ersatzsuche" in friendly_error("LookupError: No results found for song: x", notice)
 
 
 FAKE_SPOTDL = textwrap.dedent('''
