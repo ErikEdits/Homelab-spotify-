@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30
 mutagen>=1.47
 pillow>=10.0
 imageio-ffmpeg>=0.5
+smbprotocol>=1.12

@@ -21,11 +21,19 @@ DEFAULTS: dict[str, Any] = {
     # Server
     "host": "0.0.0.0",
     "port": 8484,
-    # Bibliothek: ein oder mehrere Ordner, z. B. "\\\\NAS\\Musik" oder "Z:\\Musik"
+    # Speicherort der Musik: "local" = App-Ordner (data/music), "nas" = NAS per SMB,
+    # "folder" = eigener Pfad (z. B. /mnt/nas/musik oder \\\\NAS\\Musik)
+    "storage_mode": "local",
+    "storage_path": "",
+    "nas_host": "",
+    "nas_share": "",
+    "nas_folder": "Musik",
+    "nas_user": "",
+    "nas_password": "",
+    # Zusätzliche Ordner, die nur gelesen werden (z. B. vorhandene Sammlung)
     "music_dirs": [],
     "scan_interval_minutes": 30,
     # Downloads über spotDL
-    "download_dir": "",  # leer = erster Musikordner
     "output_template": "{album-artist}/{album}/{artists} - {title}.{output-ext}",
     "download_format": "mp3",
     "download_bitrate": "auto",
@@ -42,7 +50,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Werte, die niemals ans Frontend gehen
-SECRET_KEYS = {"spotify_client_secret"}
+SECRET_KEYS = {"spotify_client_secret", "nas_password"}
 
 
 class Config:
@@ -62,15 +70,25 @@ class Config:
                 for key, value in stored.items():
                     if key in DEFAULTS:
                         self._data[key] = value
+                # Ältere Versionen kannten nur „music_dirs“: erster Ordner wird zum Speicherort
+                if "storage_mode" not in stored and self._data["music_dirs"]:
+                    first, *rest = self._data["music_dirs"]
+                    self._data.update(storage_mode="folder", storage_path=first, music_dirs=rest)
             env_dirs = os.environ.get("HOMIFY_MUSIC_DIRS")
-            if env_dirs and not self._data["music_dirs"]:
-                self._data["music_dirs"] = [d for d in env_dirs.split(os.pathsep) if d]
+            if env_dirs and self._data["storage_mode"] == "local" and not self._data["storage_path"]:
+                dirs = [d for d in env_dirs.split(os.pathsep) if d]
+                if dirs:
+                    self._data.update(storage_mode="folder", storage_path=dirs[0], music_dirs=dirs[1:])
 
     def save(self) -> None:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)  # enthält ggf. NAS-Passwort – nur für den eigenen Benutzer lesbar
+            except OSError:
+                pass
             os.replace(tmp, self.path)
 
     def get(self, key: str) -> Any:
@@ -101,13 +119,6 @@ class Config:
     def music_dirs(self) -> list[str]:
         return [d for d in (self.get("music_dirs") or []) if d and str(d).strip()]
 
-    @property
-    def download_dir(self) -> str:
-        target = (self.get("download_dir") or "").strip()
-        if target:
-            return target
-        dirs = self.music_dirs
-        return dirs[0] if dirs else str(DATA_DIR / "music")
 
 
 def _coerce(key: str, value: Any) -> Any:

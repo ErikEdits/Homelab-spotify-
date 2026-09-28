@@ -389,6 +389,22 @@ svg.icon { width: 24px; height: 24px; display: block; flex: none; }
 .user-row .grow { flex: 1; min-width: 0; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .url-list a { color: var(--accent); font-weight: 700; }
+.url-list > div { margin: 4px 0; }
+.choice-list { display: grid; gap: 8px; margin: 16px 0; }
+.choice { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--elev-3); cursor: pointer; transition: border-color .15s, background .15s; }
+.choice:hover { background: var(--hover); }
+.choice.active { border-color: var(--accent); background: rgba(30,215,96,.06); }
+.choice input { margin-top: 3px; accent-color: var(--accent); width: 18px; height: 18px; flex: none; }
+.choice-details { padding: 4px 0 8px; }
+.storage-status { background: var(--elev-2); border-radius: 8px; padding: 12px 14px; }
+.storage-head { display: flex; gap: 12px; align-items: center; }
+.storage-head svg.icon { color: var(--accent); }
+.help summary, details summary { cursor: pointer; }
+.help { margin: 4px 0 12px; font-size: 13px; color: var(--muted); }
+.help summary { font-weight: 700; color: var(--text); }
+.help ol, .steps { padding-left: 20px; line-height: 1.7; color: var(--muted); }
+.addr-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.addr-row code { background: var(--elev-2); padding: 6px 10px; border-radius: 6px; font-size: 14px; word-break: break-all; }
 
 /* ------------------------------------------------------------------ Player bar */
 .player {

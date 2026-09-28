@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import json
 import mimetypes
 import os
+import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -19,13 +25,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, db, library, media
-from .config import APP_DIR, STATIC_DIR, config
+from . import APP_NAME, __version__, auth, db, library, media, remote
+from . import storage as storages
+from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
 from .downloader import downloads
+from .migrate import migration
 from .scanner import scanner
 from .spotify import invalidate_library_index
 from .spotify import search as spotify_search
+from .streaming import ranged_response
 from .tools import BridgeError, bridge, tools
 
 log = logging.getLogger("homify.server")
@@ -229,28 +238,79 @@ def track(track_id: str, user: dict = Depends(auth.current_user)):
     return library.tracks_json(rows, user["id"])[0]
 
 
+def _source(t: dict[str, Any]):
+    """Speicherort + relativer Pfad eines Songs. Wirft 404, wenn die Datei nicht erreichbar ist."""
+    st = storages.by_key(t["root"])
+    if st is not None and t.get("rel"):
+        return st, t["rel"]
+    if os.path.isfile(t["path"]):  # Einträge aus älteren Versionen
+        return storages.LocalStorage(os.path.dirname(t["path"])), os.path.basename(t["path"])
+    raise HTTPException(404, "Datei nicht erreichbar – ist das NAS online?")
+
+
+def _temp_copy(st, rel: str, track_id: str) -> str:
+    """NAS-Datei für ffmpeg in eine temporäre lokale Datei holen."""
+    tmp_dir = DATA_DIR / "tmp" / "source"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    target = tmp_dir / f"{track_id}{os.path.splitext(rel)[1]}"
+    with st.open(rel) as src, open(target, "wb") as dst:
+        shutil.copyfileobj(src, dst, length=1024 * 1024)
+    return str(target)
+
+
+def _serve(request: Request, st, rel: str, media_type: str, headers: dict[str, str]) -> Response:
+    local = st.local_path(rel)
+    if local:
+        if not os.path.isfile(local):
+            raise HTTPException(404, "Datei nicht gefunden – wurde sie verschoben?")
+        return FileResponse(local, media_type=media_type, headers=headers)
+    info = st.stat(rel)
+    if info is None:
+        raise HTTPException(404, "Datei auf dem NAS nicht erreichbar")
+    size, mtime = info
+    return ranged_response(request, lambda: st.open(rel), size, mtime, media_type, headers)
+
+
 @app.get("/api/tracks/{track_id}/stream")
-def stream(track_id: str, transcode: int = 0, quality: str = "original", user: dict = Depends(auth.current_user)):
+def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "original",
+           user: dict = Depends(auth.current_user)):
     t = _track_or_404(track_id)
-    if not os.path.isfile(t["path"]):
-        raise HTTPException(404, "Datei nicht erreichbar – ist das NAS online?")
+    st, rel = _source(t)
     headers = {"Cache-Control": "private, max-age=86400"}
     if transcode or (quality == "low" and media.needs_transcode_for_quality(t["bitrate"], "low")):
+        local = st.local_path(rel)
+        temp: list[str] = []
+
+        def source() -> str:
+            if local:
+                return local
+            temp.append(_temp_copy(st, rel, track_id))
+            return temp[0]
+
         try:
-            out = media.transcode(t, "low" if quality == "low" else "high")
+            out = media.transcode(t, "low" if quality == "low" else "high", source=source)
         except media.TranscodeError as exc:
             raise HTTPException(500, f"Umwandlung fehlgeschlagen: {exc}") from exc
+        except OSError as exc:
+            raise HTTPException(404, f"Datei nicht erreichbar: {exc}") from exc
+        finally:
+            for f in temp:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
         return FileResponse(out, media_type="audio/mpeg", headers=headers)
     mime = (t["mime"] or "application/octet-stream").split(";")[0]
-    return FileResponse(t["path"], media_type=mime, headers=headers)
+    return _serve(request, st, rel, mime, headers)
 
 
 @app.get("/api/tracks/{track_id}/file")
-def download_file(track_id: str, user: dict = Depends(auth.current_user)):
+def download_file(track_id: str, request: Request, user: dict = Depends(auth.current_user)):
     t = _track_or_404(track_id)
-    if not os.path.isfile(t["path"]):
-        raise HTTPException(404, "Datei nicht erreichbar – ist das NAS online?")
-    return FileResponse(t["path"], filename=os.path.basename(t["path"]))
+    st, rel = _source(t)
+    name = os.path.basename(rel)
+    disposition = "attachment; filename*=UTF-8''" + urllib.parse.quote(name)
+    return _serve(request, st, rel, "application/octet-stream", {"Content-Disposition": disposition})
 
 
 @app.get("/api/covers/{cover_id}")
@@ -542,6 +602,36 @@ def status(user: dict = Depends(auth.current_user)):
     return {"scan": scanner.status, "downloads_active": downloads.active_count(), "tools": tools.status}
 
 
+STORAGE_KEYS = ("storage_mode", "storage_path", "nas_host", "nas_share", "nas_folder", "nas_user", "nas_password")
+
+
+def _storage_info() -> dict[str, Any]:
+    st = storages.primary()
+    ok, message = st.available()
+    counts = {r["root"]: r["n"] for r in db.query("SELECT root, COUNT(*) AS n FROM tracks GROUP BY root")}
+    return {
+        "mode": config.get("storage_mode"),
+        "label": st.label,
+        "kind": st.kind,
+        "online": ok,
+        "message": message,
+        "tracks": counts.get(st.key, 0),
+        "free_bytes": st.free_space() if ok else None,
+        "local_dir": str(storages.LOCAL_MUSIC_DIR),
+        "extra": [{"path": x.label, "online": x.available()[0], "tracks": counts.get(x.key, 0)}
+                  for x in storages.extra()],
+    }
+
+
+@app.get("/api/server-info")
+def server_info(user: dict = Depends(auth.current_user)):
+    """Adressen für die Apps (Heimnetz + Tailscale)."""
+    port = int(config.get("port"))
+    r = remote.info(port)
+    return {"lan": [f"http://{ip}:{port}" for ip in _lan_addresses()], "remote": r.get("urls", []),
+            "https": r.get("https_url", "")}
+
+
 @app.get("/api/settings")
 def get_settings(user: dict = Depends(auth.admin_user)):
     port = config.get("port")
@@ -558,8 +648,10 @@ def get_settings(user: dict = Depends(auth.admin_user)):
             "cache_mb": round(media.cache_size() / 1024 / 1024, 1),
             "urls": [f"http://{ip}:{port}" for ip in _lan_addresses()],
             "hostname": socket.gethostname(),
-            "download_dir": config.download_dir,
-            "music_dirs": [{"path": d, "online": os.path.isdir(d)} for d in config.music_dirs],
+            "platform": sys.platform,
+            "storage": _storage_info(),
+            "migration": migration.status,
+            "remote": remote.info(port),
         },
     }
 
@@ -567,11 +659,173 @@ def get_settings(user: dict = Depends(auth.admin_user)):
 @app.put("/api/settings")
 def put_settings(values: dict[str, Any], user: dict = Depends(auth.admin_user)):
     old_dirs = config.music_dirs
-    config.update(values)
+    config.update({k: v for k, v in values.items() if k not in STORAGE_KEYS})  # Speicherort nur über /api/storage
     media.find_ffmpeg(refresh=True)
     if config.music_dirs != old_dirs:
         scanner.start()
     return get_settings(user)
+
+
+# --------------------------------------------------------------------------- #
+# Speicherort: App-Ordner / UGREEN-NAS (SMB) / eigener Ordner + Umzug
+# --------------------------------------------------------------------------- #
+
+class StorageIn(BaseModel):
+    storage_mode: str = Field(pattern="^(local|nas|folder)$")
+    storage_path: str = ""
+    nas_host: str = ""
+    nas_share: str = ""
+    nas_folder: str = ""
+    nas_user: str = ""
+    nas_password: str = ""
+    transfer: bool = True
+    keep_copy: bool = False
+
+
+def _storage_values(body: StorageIn) -> dict[str, Any]:
+    values = body.model_dump(include=set(STORAGE_KEYS))
+    if values["nas_password"] == "********":  # Platzhalter -> gespeichertes Passwort
+        values["nas_password"] = config.get("nas_password")
+    return values
+
+
+@app.get("/api/storage")
+def storage_status(user: dict = Depends(auth.admin_user)):
+    return {"storage": _storage_info(), "migration": migration.status}
+
+
+@app.post("/api/storage/test")
+def storage_test(body: StorageIn, user: dict = Depends(auth.admin_user)):
+    values = _storage_values(body)
+    if body.storage_mode == "nas" and not (values["nas_host"] and values["nas_share"]):
+        return {"ok": False, "message": "Bitte NAS-Adresse und Freigabe eintragen."}
+    st = storages.storage_from_settings(values)
+    ok, message = st.available()
+    if not ok and body.storage_mode == "nas" and "gibt es auf dem NAS nicht" in message:
+        # Unterordner fehlt noch – wird beim Übernehmen angelegt; Schreibrechte prüfen
+        writable, wmsg = st.check_writable()
+        return {"ok": writable, "message": "Verbunden – der Ordner wird angelegt." if writable else wmsg,
+                "label": st.label}
+    if ok and hasattr(st, "check_writable"):
+        writable, wmsg = st.check_writable()
+        if not writable:
+            return {"ok": False, "message": f"Verbunden, aber: {wmsg}", "label": st.label}
+    return {"ok": ok, "message": message, "label": st.label}
+
+
+@app.post("/api/storage/apply")
+def storage_apply(body: StorageIn, user: dict = Depends(auth.admin_user)):
+    if migration.running:
+        raise HTTPException(409, "Es läuft bereits ein Umzug.")
+    values = _storage_values(body)
+    source = storages.primary()
+    target = storages.storage_from_settings(values)
+    if target.key == source.key:
+        config.update(values)
+        scanner.start()
+        return {"started": False, "message": "Gespeichert."}
+    if hasattr(target, "ensure_base"):
+        try:
+            target.ensure_base()
+        except Exception as exc:
+            raise HTTPException(400, f"NAS-Ordner konnte nicht angelegt werden: {exc}") from exc
+    ok, message = target.available()
+    if not ok:
+        raise HTTPException(400, message)
+    if not body.transfer or not source.available()[0]:
+        config.update(values)
+        scanner.start()
+        return {"started": False, "message": "Speicherort gewechselt."}
+
+    def done(success: bool) -> None:
+        config.update(values)  # erst nach dem Umzug umschalten
+        scanner.start()
+
+    downloads.pause(True)
+    migration.start(source, target, keep_copy=body.keep_copy,
+                    on_done=lambda ok: (done(ok), downloads.pause(False)))
+    return {"started": True, "migration": migration.status}
+
+
+@app.get("/api/remote")
+def remote_info(user: dict = Depends(auth.admin_user)):
+    return remote.info(int(config.get("port")), refresh=True)
+
+
+@app.post("/api/remote/https")
+def remote_https(user: dict = Depends(auth.admin_user)):
+    ok, message = remote.setup_https(int(config.get("port")))
+    return {"ok": ok, "message": message, "info": remote.info(int(config.get("port")), refresh=True)}
+
+
+@app.post("/api/storage/cancel")
+def storage_cancel(user: dict = Depends(auth.admin_user)):
+    migration.cancel()
+    return migration.status
+
+
+# --------------------------------------------------------------------------- #
+# Sicherung: Einstellungen + Datenbank (Playlists, Likes, Benutzer) mitnehmen,
+# z. B. vom Windows-Test-PC auf den Ubuntu-Homeserver
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/backup")
+def backup(user: dict = Depends(auth.admin_user)):
+    buf = io.BytesIO()
+    snapshot = DATA_DIR / "tmp" / "backup.db"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot.exists():
+        snapshot.unlink()
+    dst = sqlite3.connect(str(snapshot))
+    db.conn().backup(dst)
+    dst.close()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(snapshot, "homify.db")
+        z.writestr("config.json", json.dumps(config.public(), indent=2, ensure_ascii=False))  # ohne Passwörter
+        z.writestr("homify-backup.txt", f"Homify {__version__} Sicherung vom {time.strftime('%d.%m.%Y %H:%M')}")
+    snapshot.unlink()
+    name = time.strftime("homify-sicherung-%Y-%m-%d.zip")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/backup/restore")
+async def restore(request: Request, keep_storage: bool = True, user: dict = Depends(auth.admin_user)):
+    data = await request.body()
+    if len(data) > 500 * 1024 * 1024:
+        raise HTTPException(413, "Datei zu groß")
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        names = set(z.namelist())
+        if "homify.db" not in names:
+            raise ValueError
+    except (zipfile.BadZipFile, ValueError) as exc:
+        raise HTTPException(400, "Das ist keine Homify-Sicherung (.zip).") from exc
+    restored = DATA_DIR / "tmp" / "restore.db"
+    restored.parent.mkdir(parents=True, exist_ok=True)
+    restored.write_bytes(z.read("homify.db"))
+    try:
+        check = sqlite3.connect(str(restored))
+        check.execute("SELECT COUNT(*) FROM users").fetchone()
+        src = sqlite3.connect(str(restored))
+        src.backup(db.conn())  # Inhalt in die laufende Datenbank übernehmen
+        src.close()
+        check.close()
+    finally:
+        restored.unlink(missing_ok=True)
+    db.init()
+    if "config.json" in names:
+        values = json.loads(z.read("config.json"))
+        for key in ("spotify_client_secret", "nas_password"):
+            values.pop(key, None)  # Geheimnisse sind nicht in der Sicherung
+        if keep_storage:
+            for key in STORAGE_KEYS:
+                values.pop(key, None)
+        values.pop("port", None)
+        values.pop("host", None)
+        config.update(values)
+    scanner.start()
+    return {"ok": True}
 
 
 @app.post("/api/library/scan")

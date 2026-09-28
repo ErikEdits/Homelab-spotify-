@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -14,6 +15,7 @@ import time
 from typing import Any
 
 from . import db
+from . import storage as storages
 from .config import DATA_DIR, IS_WINDOWS, config
 from .media import find_ffmpeg
 from .scanner import scanner
@@ -67,8 +69,9 @@ def validate_query(query: str) -> str:
     return query
 
 
-def build_command(query: str) -> list[str]:
-    target = config.download_dir
+def build_command(query: str, staging: str | None = None, archive: str | None = None) -> list[str]:
+    """spotDL lädt erst in einen Zwischenordner, danach verschiebt Homify die Dateien zum Speicherort."""
+    target = staging or str(STAGING_DIR / "manual")
     template = (config.get("output_template") or DEFAULT_TEMPLATE).strip().lstrip("/\\")
     cmd = [
         str(venv_python()), "-m", "spotdl", "download", query,
@@ -89,10 +92,39 @@ def build_command(query: str) -> list[str]:
     cookie = (config.get("spotdl_cookie_file") or "").strip()
     if cookie:
         cmd += ["--cookie-file", cookie]
+    if archive:
+        cmd += ["--archive", archive]  # Songs, die schon in der Bibliothek sind, überspringen
     extra = (config.get("spotdl_extra_args") or "").strip()
     if extra:
         cmd += shlex.split(extra, posix=not IS_WINDOWS)
     return cmd
+
+
+STAGING_DIR = DATA_DIR / "tmp" / "incoming"
+
+
+def library_spotify_ids() -> set[str]:
+    return {r["spotify_id"] for r in db.query("SELECT spotify_id FROM tracks WHERE spotify_id != ''")}
+
+
+def move_to_library(staging: str) -> tuple[int, list[str]]:
+    """Fertige Downloads aus dem Zwischenordner in den Speicherort (App-Ordner/NAS) verschieben."""
+    target = storages.primary()
+    moved, errors = 0, []
+    for rel, _size, _mtime in storages.LocalStorage(staging).walk():
+        if rel.endswith((".part", ".temp", ".tmp")) or os.path.basename(rel).startswith("."):
+            continue
+        local = os.path.join(staging, *rel.split("/"))
+        try:
+            if target.exists(rel):
+                os.remove(local)  # gibt es schon – nicht überschreiben
+            else:
+                target.put(local, rel, move=True)
+            moved += 1
+        except Exception as exc:
+            errors.append(f"{rel}: {exc}")
+            log.warning("Konnte %s nicht in die Bibliothek verschieben: %s", rel, exc)
+    return moved, errors
 
 
 DEFAULT_TEMPLATE = "{album-artist}/{album}/{artists} - {title}.{output-ext}"
@@ -114,12 +146,19 @@ class DownloadManager:
         self._current: int | None = None
         self._cancel: set[int] = set()
         self._lock = threading.Lock()
+        self._paused = False
 
     # ------------------------------------------------------------------ API
     def start(self) -> None:
         db.execute("UPDATE downloads SET status = 'queued' WHERE status = 'running'")
         self._thread = threading.Thread(target=self._loop, name="downloader", daemon=True)
         self._thread.start()
+
+    def pause(self, paused: bool) -> None:
+        """Während eines Umzugs aufs NAS keine neuen Downloads starten."""
+        self._paused = paused
+        if not paused:
+            self._wake.set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -186,6 +225,10 @@ class DownloadManager:
     # ------------------------------------------------------------------ Worker
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if self._paused:
+                self._wake.wait(timeout=5)
+                self._wake.clear()
+                continue
             job = db.query_one("SELECT * FROM downloads WHERE status = 'queued' ORDER BY created_at LIMIT 1")
             if not job:
                 self._wake.wait(timeout=30)
@@ -208,17 +251,25 @@ class DownloadManager:
                 ("spotDL ist nicht installiert – Einstellungen → „spotDL installieren“.", time.time(), job_id),
             )
             return
-        target = config.download_dir
-        try:
-            os.makedirs(target, exist_ok=True)
-        except OSError as exc:
+        target = storages.primary()
+        ok, message = target.available()
+        if not ok:
             db.execute(
                 "UPDATE downloads SET status = 'error', message = ?, finished_at = ? WHERE id = ?",
-                (f"Zielordner nicht erreichbar: {target} ({exc})", time.time(), job_id),
+                (f"Speicherort nicht erreichbar: {message}", time.time(), job_id),
             )
             return
 
-        cmd = build_command(job["query"])
+        staging = STAGING_DIR / f"job-{job_id}"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        owned = library_spotify_ids()
+        wanted = set(json.loads(job.get("spotify_ids") or "[]"))
+        already = len(wanted & owned)  # schon vorhanden -> spotDL überspringt sie (Archiv)
+        archive = staging.parent / f"job-{job_id}.archive"
+        archive.write_text("".join(f"https://open.spotify.com/track/{sid}\n" for sid in sorted(owned)),
+                           encoding="utf-8")
+        cmd = build_command(job["query"], staging=str(staging), archive=str(archive))
         workdir = DATA_DIR / "tmp" / "spotdl"
         workdir.mkdir(parents=True, exist_ok=True)
         db.execute(
@@ -269,6 +320,13 @@ class DownloadManager:
             cancelled = job_id in self._cancel
             self._cancel.discard(job_id)
 
+        moved, move_errors = move_to_library(str(staging))
+        shutil.rmtree(staging, ignore_errors=True)
+        archive.unlink(missing_ok=True)
+        if move_errors:
+            errors.append("Speichern fehlgeschlagen: " + move_errors[-1])
+            done = min(done, moved)
+        done += already
         total = max(total, done)
         failed = max(total - done, 0)
         if cancelled:

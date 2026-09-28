@@ -271,6 +271,7 @@ export function modal(title, body, actions = []) {
       body, actions.length ? actionBar : null);
     backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(null); });
     document.addEventListener("keydown", onKey);
+    backdrop.append(form);
     document.body.append(backdrop);
     const first = form.querySelector("input, textarea, select");
     if (first) setTimeout(() => first.focus(), 30);

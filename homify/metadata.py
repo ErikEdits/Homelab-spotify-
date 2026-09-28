@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import re
 import struct
 from dataclasses import dataclass, field
@@ -353,11 +352,15 @@ def split_artists(values: list[str], album_artist: str = "", slash_is_separator:
     return out
 
 
-def read_track(path: str | os.PathLike) -> TrackInfo:
-    """Liest alle Infos einer Datei. Wirft keine Exceptions – im Zweifel Dateiname als Titel."""
-    p = Path(path)
+def read_track(path, name: str | None = None) -> TrackInfo:
+    """
+    Liest alle Infos einer Datei (Pfad oder geöffnete Datei vom NAS).
+    Wirft keine Exceptions – im Zweifel wird der Dateiname als Titel genommen.
+    """
+    is_file_obj = hasattr(path, "read")
+    p = Path(name if name else (getattr(path, "name", "") if is_file_obj else path) or "unbekannt")
     try:
-        f = mutagen.File(str(p))
+        f = mutagen.File(path if is_file_obj else str(p))
     except Exception:
         f = None
 

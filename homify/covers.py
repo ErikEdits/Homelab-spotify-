@@ -109,35 +109,30 @@ class CoverStore:
         self.known[cover_id] = ext
         return cover_id
 
-    def folder_cover(self, directory: str) -> str | None:
-        """cover.jpg / folder.jpg usw. im Ordner des Songs."""
-        if directory in self._folder_cache:
-            return self._folder_cache[directory]
+    def folder_cover(self, st, rel_dir: str) -> str | None:
+        """cover.jpg / folder.jpg usw. im Ordner des Songs (lokal oder auf dem NAS)."""
+        cache_key = f"{st.key}|{rel_dir}"
+        if cache_key in self._folder_cache:
+            return self._folder_cache[cache_key]
         result = None
-        try:
-            entries = [e for e in os.scandir(directory) if e.is_file()]
-        except OSError:
-            entries = []
-        images = [e for e in entries if os.path.splitext(e.name)[1].lower() in IMAGE_EXTS]
-        preferred = sorted(
-            images,
-            key=lambda e: (
-                FOLDER_IMAGES.index(os.path.splitext(e.name)[0].lower())
-                if os.path.splitext(e.name)[0].lower() in FOLDER_IMAGES else 99,
-                e.name.lower(),
-            ),
-        )
-        for entry in preferred[:3]:
+        images = [(rel, size) for rel, size in st.dir_files(rel_dir)
+                  if os.path.splitext(rel)[1].lower() in IMAGE_EXTS]
+
+        def rank(item):
+            stem = os.path.splitext(os.path.basename(item[0]))[0].lower()
+            return (FOLDER_IMAGES.index(stem) if stem in FOLDER_IMAGES else 99, stem)
+
+        for rel, size in sorted(images, key=rank)[:3]:
+            if size > 15 * 1024 * 1024:
+                continue
             try:
-                if entry.stat().st_size > 15 * 1024 * 1024:
-                    continue
-                with open(entry.path, "rb") as fh:
+                with st.open(rel) as fh:
                     result = self.store(fh.read())
                 if result:
                     break
             except OSError:
                 continue
-        self._folder_cache[directory] = result
+        self._folder_cache[cache_key] = result
         return result
 
 

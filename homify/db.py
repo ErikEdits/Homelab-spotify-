@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     id           TEXT PRIMARY KEY,
     path         TEXT NOT NULL UNIQUE,
     root         TEXT NOT NULL,
+    rel          TEXT NOT NULL DEFAULT '',
     size         INTEGER NOT NULL DEFAULT 0,
     mtime        REAL NOT NULL DEFAULT 0,
     title        TEXT NOT NULL DEFAULT '',
@@ -180,7 +181,12 @@ def conn() -> sqlite3.Connection:
 
 
 def init() -> None:
-    conn().executescript(SCHEMA)
+    c = conn()
+    c.executescript(SCHEMA)
+    # Spätere Spalten in bestehenden Datenbanken nachrüsten
+    columns = {row[1] for row in c.execute("PRAGMA table_info(tracks)")}
+    if "rel" not in columns:
+        c.execute("ALTER TABLE tracks ADD COLUMN rel TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager

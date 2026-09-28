@@ -1,21 +1,23 @@
-"""Durchsucht die Musikordner (lokal oder NAS) und hält die Bibliothek aktuell."""
+"""Durchsucht die Speicherorte (App-Ordner, NAS, eigene Ordner) und hält die Bibliothek aktuell."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import posixpath
 import threading
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterator
+from typing import Any
 
 from . import db
-from .config import config
+from . import storage as storages
 from .covers import CoverStore
 from .media import probe_duration
 from .metadata import AUDIO_EXTENSIONS, TrackInfo, read_track, spotify_id_from_url
+from .storage import Storage
 from .textutil import make_id, norm, path_id
 
 log = logging.getLogger("homify.scanner")
@@ -23,12 +25,6 @@ log = logging.getLogger("homify.scanner")
 UNKNOWN_ARTIST = "Unbekannter Künstler"
 UNKNOWN_ALBUM = "Unbekanntes Album"
 VARIOUS = "Verschiedene Interpreten"
-
-# Typische System-/Papierkorb-Ordner auf NAS-Systemen (Synology, QNAP, Windows)
-SKIP_DIRS = {
-    "@eadir", "#recycle", "$recycle.bin", "system volume information", "#snapshot",
-    ".snapshot", "lost+found", "@recycle", ".@__thumb", "@__thumb", ".trash", ".trashes",
-}
 
 BATCH = 200
 
@@ -52,8 +48,9 @@ class Scanner:
             if self._thread and self._thread.is_alive():
                 self._pending = True
                 return False
-            self._thread = threading.Thread(target=self._run, args=(full,), name="scanner", daemon=True)
-            self._thread.start()
+            thread = threading.Thread(target=self._run, args=(full,), name="scanner", daemon=True)
+            thread.start()
+            self._thread = thread
             return True
 
     def wait(self, timeout: float | None = None) -> None:
@@ -78,9 +75,10 @@ class Scanner:
 
     # ------------------------------------------------------------------ Scan
     def scan(self, full: bool = False) -> dict[str, Any]:
-        roots = [os.path.abspath(r) for r in config.music_dirs]
-        st = self.status
-        st.update(
+        all_st = storages.all_storages()
+        keys = [st.key for st in all_st]
+        st_status = self.status
+        st_status.update(
             running=True, phase="scanning", files=0, checked=0, added=0, updated=0, removed=0,
             errors=0, offline_roots=[], started_at=time.time(), finished_at=None, message="",
         )
@@ -93,58 +91,70 @@ class Scanner:
         id_to_path = {row["id"]: path for path, row in existing.items()}
 
         seen: set[str] = set()
-        todo: list[tuple[str, str, int, float]] = []
-        healthy_roots: list[str] = []
+        todo: list[tuple[Storage, str, str, int, float]] = []
+        healthy: list[str] = []
+        messages: list[str] = []
 
-        for root in roots:
-            if not os.path.isdir(root):
-                st["offline_roots"].append(root)
-                log.warning("Musikordner nicht erreichbar: %s", root)
+        def on_error(msg: str) -> None:
+            st_status["errors"] += 1
+            log.warning("Nicht lesbar: %s", msg)
+
+        for st in all_st:
+            ok, msg = st.available()
+            if not ok:
+                st_status["offline_roots"].append(st.label)
+                messages.append(f"{st.label}: {msg}")
+                log.warning("Speicherort nicht erreichbar: %s (%s)", st.label, msg)
                 continue
-            errors_before = st["errors"]
+            errors_before = st_status["errors"]
             count = 0
-            for path, size, mtime in self._walk(root):
+            for rel, size, mtime in st.walk(on_error):
+                name = posixpath.basename(rel)
+                if name.startswith("._") or os.path.splitext(name)[1].lower() not in AUDIO_EXTENSIONS:
+                    continue
                 count += 1
-                st["files"] += 1
+                st_status["files"] += 1
+                path = st.display_path(rel)
                 seen.add(path)
                 old = existing.get(path)
-                if full or not old or old["size"] != size or abs(old["mtime"] - mtime) > 1 or old["root"] != root:
-                    todo.append((root, path, size, mtime))
-            had_tracks = any(r["root"] == root for r in existing.values())
-            if st["errors"] > errors_before or (count == 0 and had_tracks):
+                if full or not old or old["size"] != size or abs(old["mtime"] - mtime) > 1 or old["root"] != st.key:
+                    todo.append((st, rel, path, size, mtime))
+            had_tracks = any(r["root"] == st.key for r in existing.values())
+            if st_status["errors"] > errors_before or (count == 0 and had_tracks):
                 # NAS weg oder Freigabe leer gemountet -> nichts löschen!
-                st["offline_roots"].append(root)
+                st_status["offline_roots"].append(st.label)
             else:
-                healthy_roots.append(root)
+                healthy.append(st.key)
 
-        st["phase"] = "reading"
+        st_status["phase"] = "reading"
         new_ids: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        workers = 6 if all(st.kind == "local" for st in all_st) else 3
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             for i in range(0, len(todo), BATCH):
                 chunk = todo[i:i + BATCH]
-                infos = list(pool.map(lambda item: _safe_read(item[1]), chunk))
+                infos = list(pool.map(lambda item: _safe_read(item[0], item[1]), chunk))
                 rows = []
-                for (root, path, size, mtime), info in zip(chunk, infos):
-                    track_id = _assign_id(root, path, id_to_path, seen)
+                for (st, rel, path, size, mtime), info in zip(chunk, infos):
+                    track_id = _assign_id(st, rel, path, id_to_path, seen)
                     id_to_path[track_id] = path
-                    cover_id = covers.store(info.cover) or covers.folder_cover(os.path.dirname(path))
+                    cover_id = covers.store(info.cover) or covers.folder_cover(st, posixpath.dirname(rel))
                     info.cover = None
                     old = existing.get(path)
                     added_at = time.time() if not first_import else mtime
-                    rows.append(_build_row(track_id, root, path, size, mtime, info, cover_id, added_at))
+                    rows.append(_build_row(track_id, st, rel, path, size, mtime, info, cover_id, added_at))
                     if old:
-                        st["updated"] += 1
+                        st_status["updated"] += 1
                     else:
-                        st["added"] += 1
+                        st_status["added"] += 1
                         new_ids[rows[-1]["sig"]] = track_id
-                    st["checked"] += 1
+                    st_status["checked"] += 1
                 self._write(rows)
 
-        # Entfernte Dateien (nur in erreichbaren Ordnern!)
-        st["phase"] = "cleanup"
+        # Entfernte Dateien (nur in erreichbaren Speicherorten!)
+        st_status["phase"] = "cleanup"
         removed = [
             row for path, row in existing.items()
-            if path not in seen and (row["root"] in healthy_roots or row["root"] not in roots)
+            if path not in seen and (row["root"] in healthy or row["root"] not in keys)
         ]
         if removed:
             with db.transaction() as c:
@@ -153,62 +163,31 @@ class Scanner:
                     if new_id and new_id != row["id"]:
                         _remap(c, row["id"], new_id)  # Datei verschoben -> Playlists/Likes behalten
                     if id_to_path.get(row["id"]) not in (None, row["path"]):
-                        continue  # ID gehört inzwischen einer anderen Datei (Ordner umbenannt)
+                        continue  # ID gehört inzwischen einer anderen Datei (z. B. nach Umzug aufs NAS)
                     c.execute("DELETE FROM tracks WHERE id = ? AND path = ?", (row["id"], row["path"]))
                     c.execute(
                         "DELETE FROM track_artists WHERE track_id = ? AND NOT EXISTS "
                         "(SELECT 1 FROM tracks WHERE id = ?)", (row["id"], row["id"]),
                     )
-            st["removed"] = len(removed)
+            st_status["removed"] = len(removed)
 
         if todo or removed or full:
-            st["phase"] = "indexing"
+            st_status["phase"] = "indexing"
             rebuild_aggregates()
 
-        st.update(running=False, phase="done", finished_at=time.time())
-        if st["offline_roots"]:
-            st["message"] = "Nicht erreichbar: " + ", ".join(st["offline_roots"])
+        st_status.update(running=False, phase="done", finished_at=time.time())
+        if messages:
+            st_status["message"] = "; ".join(messages)
         log.info(
-            "Scan fertig: %s Dateien, +%s ~%s -%s", st["files"], st["added"], st["updated"], st["removed"]
+            "Scan fertig: %s Dateien, +%s ~%s -%s", st_status["files"], st_status["added"],
+            st_status["updated"], st_status["removed"],
         )
         for listener in list(self.listeners):
             try:
-                listener(dict(st))
+                listener(dict(st_status))
             except Exception:  # pragma: no cover
                 log.exception("Scan-Listener fehlgeschlagen")
-        return dict(st)
-
-    def _walk(self, root: str) -> Iterator[tuple[str, int, float]]:
-        stack = [root]
-        linked: set[str] = set()  # Schutz vor Endlosschleifen durch Symlinks
-        while stack:
-            directory = stack.pop()
-            try:
-                it = os.scandir(directory)
-            except OSError as exc:
-                log.warning("Ordner nicht lesbar: %s (%s)", directory, exc)
-                self.status["errors"] += 1
-                continue
-            with it:
-                for entry in it:
-                    name = entry.name
-                    if name.startswith("."):
-                        continue
-                    try:
-                        if entry.is_dir(follow_symlinks=True):
-                            if name.lower() in SKIP_DIRS:
-                                continue
-                            if entry.is_symlink():
-                                real = os.path.realpath(entry.path)
-                                if real in linked or os.path.realpath(directory).startswith(real):
-                                    continue
-                                linked.add(real)
-                            stack.append(entry.path)
-                        elif os.path.splitext(name)[1].lower() in AUDIO_EXTENSIONS:
-                            s = entry.stat()
-                            yield entry.path, s.st_size, s.st_mtime
-                    except OSError:
-                        self.status["errors"] += 1
+        return dict(st_status)
 
     def _write(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -235,46 +214,52 @@ class Scanner:
                     )
 
 
-def _safe_read(path: str) -> TrackInfo:
+def _safe_read(st: Storage, rel: str) -> TrackInfo:
+    local = st.local_path(rel)
     try:
-        info = read_track(path)
-    except Exception:  # pragma: no cover - read_track fängt schon alles ab
-        log.exception("Konnte %s nicht lesen", path)
-        info = TrackInfo(title=os.path.splitext(os.path.basename(path))[0], readable=False)
-    if not info.duration:
-        info.duration = probe_duration(path)  # z. B. .webm/.mka – mutagen kennt die Dauer nicht
+        if local:
+            info = read_track(local)
+        else:
+            with st.open(rel) as fh:
+                info = read_track(fh, name=rel)
+    except Exception:
+        log.exception("Konnte %s nicht lesen", rel)
+        info = TrackInfo(title=os.path.splitext(posixpath.basename(rel))[0], readable=False)
+    if not info.duration and local:
+        info.duration = probe_duration(local)  # z. B. .webm/.mka – mutagen kennt die Dauer nicht
     return info
 
 
-def _assign_id(root: str, path: str, id_to_path: dict[str, str], seen: set[str]) -> str:
-    rel = os.path.relpath(path, root)
+def _assign_id(st: Storage, rel: str, path: str, id_to_path: dict[str, str], seen: set[str]) -> str:
+    """ID aus dem relativen Pfad – so bleibt sie beim Umzug (PC -> NAS) gleich."""
     track_id = path_id(rel)
     other = id_to_path.get(track_id)
-    if other and other != path and (other in seen or os.path.exists(other)):
-        track_id = path_id(path)
+    if other and other != path and other in seen:
+        track_id = path_id(st.key + "/" + rel)
     return track_id
 
 
-def _build_row(track_id, root, path, size, mtime, info: TrackInfo, cover_id, added_at) -> dict[str, Any]:
+def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, cover_id, added_at) -> dict[str, Any]:
     artists = info.artists or [UNKNOWN_ARTIST]
     first_artist = artists[0]
     album_tag = info.album.strip()
     album_artist_tag = info.album_artist.strip()
-    parent = os.path.dirname(path)
+    parent = posixpath.dirname(rel)
     if album_tag and album_artist_tag:
         album, album_key = album_tag, make_id("aa", album_artist_tag, album_tag)
     elif album_tag:
         album, album_key = album_tag, make_id("dir", parent, album_tag)
     else:
-        album = os.path.basename(parent) if os.path.normcase(parent) != os.path.normcase(root) else UNKNOWN_ALBUM
+        album = posixpath.basename(parent) if parent else UNKNOWN_ALBUM
         album_key = make_id("art", first_artist, album)
     album_artist = album_artist_tag or first_artist
     artist = ", ".join(artists)
-    title = info.title or os.path.splitext(os.path.basename(path))[0]
+    title = info.title or os.path.splitext(posixpath.basename(rel))[0]
     return {
         "id": track_id,
         "path": path,
-        "root": root,
+        "root": st.key,
+        "rel": rel,
         "size": size,
         "mtime": mtime,
         "title": title,

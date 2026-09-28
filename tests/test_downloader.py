@@ -1,3 +1,4 @@
+import os
 import sys
 import textwrap
 
@@ -36,7 +37,11 @@ def test_friendly_errors():
 
 
 FAKE_SPOTDL = textwrap.dedent('''
-    import sys
+    import os, sys
+    staging = sys.argv[1]
+    os.makedirs(os.path.join(staging, "Daft Punk", "Fake Album"), exist_ok=True)
+    with open(os.path.join(staging, "Daft Punk", "Fake Album", "Daft Punk - One More Time.mp3"), "wb") as f:
+        f.write(b"ID3" + b"x" * 100)
     print("Processing query: https://open.spotify.com/album/x")
     print("Found 3 songs in Discovery (Album)")
     print('Downloaded "Daft Punk - One More Time": https://music.youtube.com/watch?v=1')
@@ -46,10 +51,16 @@ FAKE_SPOTDL = textwrap.dedent('''
 ''')
 
 
-def test_job_progress_parsing(scanned, tmp_path, monkeypatch):
+def test_job_progress_parsing(scanned, tmp_path, monkeypatch, music_dir):
     fake = tmp_path / "fake_spotdl.py"
     fake.write_text(FAKE_SPOTDL, encoding="utf-8")
-    monkeypatch.setattr(downloader, "build_command", lambda q: [sys.executable, str(fake)])
+    seen = {}
+
+    def fake_command(q, staging=None, archive=None):
+        seen["archive"] = archive
+        return [sys.executable, str(fake), staging]
+
+    monkeypatch.setattr(downloader, "build_command", fake_command)
     monkeypatch.setattr(downloader, "venv_python", lambda: type("P", (), {"exists": lambda self: True})())
     monkeypatch.setattr(downloader.scanner, "start", lambda *a, **k: True)
     mgr = DownloadManager()
@@ -60,3 +71,16 @@ def test_job_progress_parsing(scanned, tmp_path, monkeypatch):
     assert done["status"] == "partial"
     assert done["done"] == 2 and done["total"] == 3 and done["failed"] == 1
     assert "YouTube Music" in done["message"]
+    # Datei wurde aus dem Zwischenordner in den Speicherort verschoben
+    moved = music_dir / "Daft Punk" / "Fake Album" / "Daft Punk - One More Time.mp3"
+    assert moved.exists()
+    moved.unlink()
+    moved.parent.rmdir()
+    assert not (downloader.STAGING_DIR / f"job-{job['id']}").exists()
+    assert seen["archive"] and not os.path.exists(seen["archive"])
+
+
+def test_build_command_uses_staging_and_archive(scanned, tmp_path):
+    cmd = build_command("https://open.spotify.com/track/abc", staging=str(tmp_path), archive="a.txt")
+    assert cmd[cmd.index("--output") + 1].startswith(str(tmp_path))
+    assert cmd[cmd.index("--archive") + 1] == "a.txt"

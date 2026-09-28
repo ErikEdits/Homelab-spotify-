@@ -5,7 +5,7 @@ import { artistLinks, likeButton, navigate, trackMenu } from "./components.js";
 import { downloads, downloadsView, refreshDownloads } from "./downloads.js";
 import { player } from "./player.js";
 import { searchView } from "./search.js";
-import { settingsView } from "./settings.js";
+import { appsView, settingsView } from "./settings.js";
 import {
   clear, closeMenu, cover, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, plural, toast,
 } from "./ui.js";
@@ -90,6 +90,7 @@ const routes = [
   [/^#\/liked$/, likedView, "liked"],
   [/^#\/downloads$/, downloadsView, "downloads"],
   [/^#\/settings$/, settingsView, "settings"],
+  [/^#\/apps$/, appsView, "apps"],
   [/^#\/album\/(?<id>[^/?]+)/, albumView, "album"],
   [/^#\/artist\/(?<id>[^/?]+)/, artistView, "artist"],
   [/^#\/playlist\/(?<id>\d+)/, playlistView, "playlist"],
@@ -158,6 +159,9 @@ function setupShell() {
     { label: "Einstellungen", icon: "settings", action: () => navigate("#/settings") },
     { label: "Downloads", icon: "download", action: () => navigate("#/downloads") },
     { label: "Lieblingssongs", icon: "heart", action: () => navigate("#/liked") },
+    { label: window.HomifyAndroid || window.homifyDesktop ? "Apps & Server-Adresse" : "Apps für Handy & PC", icon: "download", action: () => navigate("#/apps") },
+    (window.HomifyAndroid?.openSettings || window.homifyDesktop?.openSettings)
+      ? { label: "Server wechseln", icon: "wifi", action: () => (window.HomifyAndroid?.openSettings || window.homifyDesktop.openSettings)() } : null,
     "sep",
     { label: "Abmelden", icon: "logout", action: async () => { await api("/auth/logout", { method: "POST" }); player.pause(); location.reload(); } },
   ]));

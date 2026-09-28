@@ -59,24 +59,32 @@ def test_moved_file_keeps_playlist_and_like(scanned, music_dir):
 
 def test_offline_nas_does_not_wipe_library(scanned, music_dir, tmp_path):
     before = db.query_one("SELECT COUNT(*) AS n FROM tracks")["n"]
-    original = config.get("music_dirs")
+    original = config.get("storage_path")
     # Musikordner „verschwindet“ (NAS aus): Pfad existiert nicht mehr
-    offline = str(tmp_path / "gone")
+    offline = os.path.abspath(str(tmp_path / "gone"))
     try:
-        db.execute("UPDATE tracks SET root = ?", (offline,))
-        config._data["music_dirs"] = [offline]
+        db.execute("UPDATE tracks SET root = ?", ("local:" + offline,))
+        config._data["storage_path"] = offline
         result = scanner.scan()
         assert offline in result["offline_roots"]
         assert db.query_one("SELECT COUNT(*) AS n FROM tracks")["n"] == before
         # Leer gemounteter Ordner (Ubuntu: Mountpoint ohne NAS) -> ebenfalls nichts löschen
-        empty = tmp_path / "empty_mount"
-        empty.mkdir()
-        db.execute("UPDATE tracks SET root = ?", (str(empty),))
-        config._data["music_dirs"] = [str(empty)]
+        empty = os.path.abspath(str(tmp_path / "empty_mount"))
+        os.mkdir(empty)
+        db.execute("UPDATE tracks SET root = ?", ("local:" + empty,))
+        config._data["storage_path"] = empty
         result = scanner.scan()
-        assert str(empty) in result["offline_roots"]
+        assert empty in result["offline_roots"]
         assert db.query_one("SELECT COUNT(*) AS n FROM tracks")["n"] == before
     finally:
-        config._data["music_dirs"] = original
-        db.execute("UPDATE tracks SET root = ?", (os.path.abspath(original[0]),))
+        config._data["storage_path"] = original
+        db.execute("UPDATE tracks SET root = ?", ("local:" + os.path.abspath(original),))
         scanner.scan()
+
+
+def test_default_storage_is_app_folder(scanned):
+    from homify import storage
+
+    st = storage.storage_from_settings({"storage_mode": "local"})
+    assert st.label.startswith("App-Ordner")
+    assert os.path.isdir(st.root)

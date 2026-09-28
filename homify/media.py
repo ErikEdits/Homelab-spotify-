@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
+from typing import Callable
 
 from .config import DATA_DIR, IS_WINDOWS, config
 
@@ -100,8 +101,11 @@ class TranscodeError(RuntimeError):
     pass
 
 
-def transcode(track: dict, quality: str = "high") -> Path:
-    """Wandelt einen Song in MP3 um (Ergebnis wird zwischengespeichert)."""
+def transcode(track: dict, quality: str = "high", source: Callable[[], str] | None = None) -> Path:
+    """
+    Wandelt einen Song in MP3 um (Ergebnis wird zwischengespeichert).
+    source: liefert den lokalen Pfad der Quelldatei (bei NAS-Dateien eine temporäre Kopie).
+    """
     if quality not in QUALITIES:
         quality = "high"
     ff = find_ffmpeg()
@@ -120,7 +124,8 @@ def transcode(track: dict, quality: str = "high") -> Path:
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part")
         args, _ = QUALITIES[quality]
-        cmd = [ff, "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", track["path"],
+        input_path = source() if source else track["path"]
+        cmd = [ff, "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", input_path,
                "-map", "0:a:0", "-vn", "-map_metadata", "-1"]
         if (track.get("sample_rate") or 0) > 48000 or track.get("codec") == "dsd":
             cmd += ["-ar", "44100"]
