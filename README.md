@@ -1,10 +1,10 @@
 # Homify – dein eigenes Spotify fürs Homelab
 
-Homify sieht aus und fühlt sich an wie Spotify, spielt aber **deine eigene Musik** vom NAS ab –
-auf dem PC, dem Handy, dem Laptop oder dem Fernseher, im Heimnetz oder von unterwegs.
-Fehlt ein Song, suchst du ihn einfach oder fügst einen Spotify-Link ein: Homify zeigt passende
-Vorschläge von Spotify und holt den Song per [spotDL](https://github.com/spotDL/spotify-downloader)
-direkt in deine Bibliothek.
+Homify sieht aus und fühlt sich an wie Spotify, spielt aber **deine eigene Musik** – gespeichert
+auf deinem NAS (z. B. UGREEN), gestreamt von deinem Homeserver auf Handy, PC und Browser, zuhause
+und unterwegs. Fehlt ein Song, suchst du ihn einfach oder fügst einen Spotify-Link ein: Homify zeigt
+passende Vorschläge von Spotify und holt den Song per [spotDL](https://github.com/spotDL/spotify-downloader)
+in deine Bibliothek.
 
 ![Startseite](docs/screenshot-home.jpg)
 
@@ -14,123 +14,155 @@ direkt in deine Bibliothek.
 
 ![Handy](docs/screenshot-mobile.jpg)
 
+## Das Prinzip: ein zentrales Programm, drei Wege zum Hören
+
+```
+                          ┌────────────────────────────────────┐
+  Android-App (APK) ──┐   │  Homify-Server                     │      ┌─────────────────┐
+  Windows-App (.exe) ─┼──►│  Ubuntu-Homeserver                 │─SMB─►│  UGREEN-NAS     │
+  Website (Browser) ──┘   │  (zum Testen: dein Windows-PC)     │      │  /Musik/…       │
+     zuhause: WLAN/LAN    │  Bibliothek · Streaming · Download │      └─────────────────┘
+     unterwegs: Tailscale └────────────────────────────────────┘
+```
+
+- **Der Homify-Server** ist das zentrale Programm. Er kennt deine Bibliothek, streamt die Musik,
+  lädt fehlende Songs über spotDL und verwaltet Benutzer, Playlists und Lieblingssongs.
+- **Speicherort:** Solange kein NAS eingestellt ist, speichert Homify alles im eigenen App-Ordner
+  (`data/music`) – perfekt zum Testen auf Windows. Trägst du in Homify dein **UGREEN-NAS** ein,
+  überträgt Homify alle Songs dorthin (jede Datei wird geprüft) und speichert ab dann alles auf dem NAS.
+  Playlists und Lieblingssongs bleiben erhalten.
+- **Apps:** Die Android-App und die Windows-App fragen beim ersten Start nach der Server-Adresse.
+  Die Website ist einfach die Server-Adresse im Browser.
+- **Von überall:** Mit [Tailscale](https://tailscale.com) sind Handy und PC auch unterwegs sicher
+  mit dem Homeserver verbunden – ohne Router-Einstellungen und ohne offenen Port im Internet.
+
 ## Was Homify kann
 
-- **Spotify-Look**: Seitenleiste, Startseite mit Schnellzugriff, Alben, Künstler, Playlists,
+- **Spotify-Look**: Startseite mit Schnellzugriff, Suche, Bibliothek, Alben, Künstler, Playlists,
   Lieblingssongs, Warteschlange, Zufall/Wiederholen, Vollbild-Player, Kontextmenüs, Tastenkürzel.
-- **Streaming vom NAS**: Musikordner per Netzwerkfreigabe (`\\NAS\Musik`, `Z:\Musik`, `/mnt/nas/musik`).
-  Neue Dateien werden automatisch gefunden (regelmäßiger Scan).
-- **Infos und Cover kommen aus den Dateien**: Titel, Künstler, Album, Jahr, Genre, Tracknummer und
+- **Infos und Cover aus den Dateien**: Titel, Künstler, Album, Jahr, Genre, Tracknummer und
   eingebettete Cover (oder `cover.jpg`/`folder.jpg` im Ordner).
-- **Alle Songs funktionieren**: MP3, M4A/AAC, FLAC, OGG, Opus und WAV spielt der Browser direkt.
-  Was er nicht kann (WMA, ALAC, APE, WavPack, AIFF, DSD …), wandelt Homify automatisch
-  in MP3 um. Klappt ein Song trotzdem nicht, schaltet der Player von selbst auf Umwandlung um.
-- **Fehlt ein Song? Holen!** Suche nach Namen oder füge einen Spotify-Link ein (Song, Album,
-  Playlist, Künstler). Homify zeigt die Treffer von Spotify, markiert, was du schon hast, und
-  lädt Fehlendes mit einem Klick über spotDL herunter. Danach steht der Song mit Cover in deiner
-  Bibliothek.
-- **Von überall**: Weboberfläche für jedes Gerät, als App installierbar („Zum Startbildschirm“),
-  Steuerung über Sperrbildschirm und Medientasten, Datensparmodus für unterwegs.
-- **Mehrere Benutzer**: eigene Playlists, Lieblingssongs und Verlauf pro Person. Der Admin
-  legt fest, wer herunterladen darf.
-- **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, „Mehr auf Spotify finden“ beim Künstler,
-  Download einzelner Dateien aufs Gerät.
-
-## So funktioniert es
-
-```
- Handy / PC / Laptop  ──(Browser, WLAN/LAN)──►  Homify-Server (dein Windows-PC)
-                                                   │  liest & streamt
-                                                   ▼
-                                              NAS: \\NAS\Musik
-                                                   ▲  speichert neue Songs
-                                   spotDL ─────────┘  (Infos: Spotify, Audio: YouTube Music)
-```
-
-Homify ist ein kleiner Server (Python), der auf deinem Windows-PC läuft. Das Programmfenster ist
-die gleiche Oberfläche, die du auch auf dem Handy im Browser öffnest.
+- **Alle Songs funktionieren**: MP3, M4A/AAC, FLAC, OGG, Opus und WAV laufen direkt. WMA, ALAC,
+  APE, WavPack, AIFF, DSD … wandelt Homify automatisch um – auch direkt vom NAS.
+- **Fehlt ein Song? Holen!** Name oder Spotify-Link (Song, Album, Playlist, Künstler) eingeben,
+  Homify zeigt die Treffer, markiert, was du schon hast, und holt den Rest mit einem Klick.
+- **Mehrere Benutzer** mit eigenen Playlists, Lieblingssongs und Verlauf.
+- **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, Sperrbildschirm-/Kopfhörer-Steuerung,
+  Datensparmodus für unterwegs, Sicherung zum Umziehen auf den Server.
 
 ---
 
-## Installation unter Windows
+## Schritt 1 – Zum Testen auf Windows
 
-**Voraussetzungen:** Windows 10 oder 11. Python wird bei Bedarf automatisch installiert.
+1. Repository herunterladen: **Code → Download ZIP**, entpacken nach z. B. `C:\Homify`.
+2. `windows\Installieren.bat` doppelklicken. Das Skript installiert bei Bedarf Python, alle Pakete
+   und spotDL, legt eine Desktop-Verknüpfung an und gibt den Port in der Windows-Firewall frei.
+3. Homify öffnet sich – Admin-Konto anlegen. Fertig: Die Musik liegt erstmal im App-Ordner
+   `C:\Homify\data\music`.
+4. Songs suchen und holen, Playlists anlegen, alles ausprobieren.
 
-1. Dieses Repository herunterladen: grüner Button **Code → Download ZIP** und entpacken
-   (oder `git clone`). Am besten in einen festen Ordner, z. B. `C:\Homify`.
-2. Im Ordner `windows` doppelt auf **`Installieren.bat`** klicken.
-   - Fehlt Python, fragt das Skript, ob es Python 3.12 installieren soll. Danach das Skript
-     **noch einmal** starten.
-   - Das Skript installiert alles Nötige, richtet spotDL ein, legt eine **Desktop-Verknüpfung**
-     an und fragt einmal nach Admin-Rechten für die **Firewall-Freigabe** (damit das Handy
-     Homify erreicht).
-3. Homify öffnet sich. Beim ersten Start legst du dein **Admin-Konto** an.
-4. Unter **Einstellungen → Bibliothek** den Musikordner eintragen, z. B. `\\NAS\Musik`
-   (Knopf „Ordner wählen“ hilft) und **Einstellungen speichern**. Der Scan startet sofort.
+Weitere Skripte im Ordner `windows`: `Starten-mit-Konsole.bat` (mit Protokoll), `Beenden.bat`,
+`Autostart-einrichten.bat`, `Aktualisieren.bat`.
 
-### Die Windows-Skripte im Ordner `windows`
+## Schritt 2 – UGREEN-NAS einstellen
 
-| Datei | Wofür |
+In Homify: **Einstellungen → Speicherort der Musik → NAS**
+
+| Feld | Was eintragen |
 |---|---|
-| `Installieren.bat` | Einmalige Installation (erneut ausführen schadet nicht) |
-| `Homify.vbs` (Desktop-Verknüpfung „Homify“) | Startet Homify ohne Konsolenfenster und öffnet das Programmfenster |
-| `Starten-mit-Konsole.bat` | Start mit sichtbarem Protokoll – praktisch bei Problemen |
-| `Autostart-einrichten.bat` | Homify startet unsichtbar bei jeder Windows-Anmeldung (`… entfernen` zum Rückgängigmachen) |
-| `Beenden.bat` | Hintergrund-Server stoppen (geht auch unter Einstellungen → System) |
-| `Aktualisieren.bat` | Neue Homify-Version (per `git pull`), Pakete und spotDL aktualisieren |
+| NAS-Adresse | IP des NAS, z. B. `192.168.1.50` (steht in UGOS unter Systemsteuerung → Netzwerk oder im Router) |
+| Freigegebener Ordner | Name des freigegebenen Ordners, z. B. `Musik` |
+| Unterordner | z. B. `Musik` – wird angelegt, falls er fehlt (leer = direkt in der Freigabe) |
+| Benutzer / Passwort | dein UGOS-Benutzer mit Lese- und Schreibrechten für den Ordner |
 
-### Musik vom NAS einbinden
+Vorher auf dem NAS (UGOS Pro): **SMB aktivieren** (Systemsteuerung → Dateidienste → SMB) und in
+der App „Dateien“ einen freigegebenen Ordner anlegen. Die Menünamen können je nach UGOS-Version
+leicht abweichen.
 
-- **UNC-Pfad** (empfohlen): `\\NAS-NAME\Musik` oder `\\192.168.1.10\Musik`.
-- **Netzlaufwerk**: im Explorer „Netzlaufwerk verbinden“ (z. B. `Z:`), dann `Z:\` bzw. `Z:\Musik`.
-- Homify läuft mit deinem Windows-Benutzer. Wenn du die Freigabe im Explorer öffnen kannst,
-  kann Homify es auch. Anmeldedaten für das NAS in Windows speichern („Anmeldedaten merken“).
-- Mehrere Ordner sind möglich (einer pro Zeile). Neue Downloads landen im ersten Ordner, oder
-  im eigens eingestellten **Download-Ordner**.
-- Ist das NAS mal aus, löscht Homify **nichts** aus der Bibliothek. Die Songs sind wieder da,
-  sobald das NAS erreichbar ist.
+Dann **Verbindung testen** → **Speicherort übernehmen**. Mit „Vorhandene Musik übertragen“ kopiert
+Homify alle Songs aufs NAS, prüft jede Datei und löscht sie erst dann im App-Ordner
+(„Kopie am alten Ort behalten“ lässt sie liegen). Ist das NAS mal aus, löscht Homify **nichts**
+aus der Bibliothek.
 
-## Auf dem Handy und anderen Geräten
+## Schritt 3 – Auf den Ubuntu-Homeserver umziehen
 
-Unter **Einstellungen → Zugriff von anderen Geräten** stehen die Adressen, z. B.
-`http://192.168.1.20:8484`. Diese auf dem Handy im Browser öffnen und anmelden.
+Ein Befehl holt Homify und richtet alles ein (Dienst mit Autostart, Firewall, Tailscale mit HTTPS):
 
-- **Wie eine App**: im Browser-Menü „Zum Startbildschirm hinzufügen“ (Android/Chrome und iPhone/Safari).
-- **Sperrbildschirm**: Titel, Cover, Weiter/Zurück und Spulen funktionieren über die Medien-Steuerung.
-- **Unterwegs**: Einstellungen → Wiedergabe → **Datensparend (128 kbit/s)**.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ErikEdits/Homelab-spotify-/main/ubuntu/bootstrap.sh | bash
+```
 
-### Von unterwegs (außerhalb des Heimnetzes)
+oder von Hand:
 
-Am einfachsten und sichersten mit **[Tailscale](https://tailscale.com)** (kostenlos für private Nutzung):
+```bash
+git clone https://github.com/ErikEdits/Homelab-spotify-.git ~/homify
+cd ~/homify
+./ubuntu/install.sh            # fragt, was eingerichtet werden soll (--all = alles)
+```
 
-1. Tailscale auf dem Homify-PC und auf dem Handy installieren und mit demselben Konto anmelden.
-2. Auf dem Handy `http://<Tailscale-Name-des-PCs>:8484` öffnen (z. B. `http://mein-pc:8484`).
+Danach:
 
-Alternativen: WireGuard/VPN auf dem Router oder ein Reverse-Proxy mit HTTPS (z. B. Caddy).
-**Den Port nicht ungeschützt per Portweiterleitung ins Internet stellen.**
+1. Im Browser `http://<IP-des-Servers>:8484` öffnen.
+2. **Sicherung mitnehmen:** auf dem Windows-Test-PC unter *Einstellungen → Sicherung* herunterladen,
+   auf dem Server unter *Einstellungen → Sicherung einspielen*. Damit sind Benutzer, Playlists,
+   Lieblingssongs und Einstellungen da.
+3. Auf dem Server den Speicherort **NAS** eintragen (wie in Schritt 2). Liegt die Musik schon auf
+   dem NAS, einfach „Vorhandene Musik übertragen“ abwählen – Homify liest das NAS ein, und weil die
+   Pfade gleich sind, passen alle Playlists und Lieblingssongs.
+4. Den Windows-PC brauchst du dann nicht mehr als Server (`windows\Beenden.bat`).
+
+Nützlich auf dem Server: `systemctl status homify`, `journalctl -u homify -f`,
+Update: `cd ~/homify && git pull && ./ubuntu/install.sh --service`.
+
+## Schritt 4 – Apps für Handy und PC
+
+In Homify unter **Apps** (Benutzermenü oben rechts) stehen die Download-Knöpfe und die
+Server-Adressen. Die Apps werden automatisch von GitHub gebaut:
+**[Releases → neueste Version](https://github.com/ErikEdits/Homelab-spotify-/releases/latest)**
+
+| | Download | Einrichtung |
+|---|---|---|
+| **Android** | `Homify.apk` | Auf dem Handy öffnen, „Installation aus dieser Quelle zulassen“, Server-Adresse eintragen |
+| **Windows** | `Homify-Setup.exe` | Installieren (bei „Unbekannter Herausgeber“: *Weitere Informationen → Trotzdem ausführen*), Server-Adresse eintragen |
+| **Website** | – | Server-Adresse im Browser öffnen |
+
+Beide Apps nehmen zwei Adressen: die **Heimnetz-Adresse** (`http://192.168.x.x:8484`) und die
+**Adresse für unterwegs** (`https://<server>.<tailnet>.ts.net`). Sie nehmen automatisch die, die
+gerade erreichbar ist.
+
+Die Android-App spielt im Hintergrund weiter, zeigt Titel und Cover in der Benachrichtigung und
+auf dem Sperrbildschirm und reagiert auf Bluetooth-Kopfhörer. Die Windows-App hat Medientasten und
+Wiedergabe-Knöpfe in der Taskleisten-Vorschau.
+
+## Von unterwegs: Tailscale
+
+1. Auf dem Server: `./ubuntu/install.sh --tailscale` (macht auch die HTTPS-Adresse).
+   Falls HTTPS nicht klappt: in der [Tailscale-Verwaltung](https://login.tailscale.com/admin/dns)
+   *MagicDNS* und *HTTPS Certificates* einschalten, dann in Homify unter *Einstellungen → Zugriff*
+   auf **HTTPS-Adresse einrichten** klicken.
+2. Auf Handy und PC die Tailscale-App installieren und mit **demselben Konto** anmelden.
+3. Die `https://…ts.net`-Adresse als „Adresse für unterwegs“ in die Apps eintragen.
+
+**Keine Portweiterleitung am Router nötig** – und bitte auch keine einrichten.
+
+---
 
 ## Songs holen, die du nicht hast (spotDL)
 
-1. Oben auf **Suchen** gehen und den Songnamen tippen, oder einen Spotify-Link einfügen,
-   z. B. `https://open.spotify.com/album/…`.
-2. Unter deinen eigenen Treffern erscheint **„Nicht dabei? Von Spotify holen“** mit Vorschlägen.
-   Was du schon hast, ist mit **„In Bibliothek“** markiert.
-3. Auf **Holen** klicken. Den Fortschritt siehst du unter **Downloads**. Ist der Song fertig,
-   kannst du ihn direkt abspielen. Titel, Album und Cover sind schon in der Datei.
+1. **Suchen** öffnen, Songnamen tippen oder Spotify-Link einfügen.
+2. Unter deinen Treffern erscheint **„Nicht dabei? Von Spotify holen“**. Was du schon hast, ist
+   mit **„In Bibliothek“** markiert.
+3. **Holen** klicken. Fortschritt unter **Downloads**. Fertige Songs landen im Speicherort
+   (App-Ordner bzw. NAS) und lassen sich sofort abspielen.
 
 Gut zu wissen:
-
 - spotDL holt die Infos von Spotify und das Audio von YouTube Music (meist ~128–256 kbit/s).
-- Wenn Downloads plötzlich scheitern (YouTube ändert öfter etwas): **Einstellungen →
-  Downloads → spotDL aktualisieren**.
-- Meldet YouTube „Bestätige, dass du kein Bot bist“: eine `cookies.txt` deines YouTube-Kontos
-  exportieren und unter Einstellungen als Cookie-Datei eintragen.
-- Eigene Spotify-API-Daten sind normalerweise **nicht** nötig. Falls Spotify-Anfragen
-  blockiert werden, kannst du unter developer.spotify.com eine App anlegen und die Daten eintragen.
-- Bitte nur für Musik nutzen, die du privat nutzen darfst. Die Nutzungsbedingungen von
-  Spotify und YouTube gelten weiterhin.
+- Scheitern Downloads plötzlich: **Einstellungen → Downloads → spotDL aktualisieren**.
+- Meldet YouTube „Bestätige, dass du kein Bot bist“: `cookies.txt` exportieren und als
+  Cookie-Datei eintragen.
+- Bitte nur für Musik nutzen, die du privat nutzen darfst.
 
-## Tastenkürzel
+## Tastenkürzel (Website & Windows-App)
 
 | Taste | Aktion |
 |---|---|
@@ -141,65 +173,45 @@ Gut zu wissen:
 | `S` / `R` / `M` | Zufall / Wiederholen / Stumm |
 | `/` oder Strg + K | Suche |
 
----
-
-## Später: Ubuntu
-
-```bash
-git clone https://github.com/ErikEdits/Homelab-spotify-.git homify
-cd homify
-./ubuntu/install.sh             # installieren
-./ubuntu/start.sh               # starten
-./ubuntu/install.sh --service   # oder als Dienst mit Autostart (systemd)
-```
-
-NAS-Freigabe dauerhaft einbinden (SMB/CIFS), Beispiel für `/etc/fstab`:
-
-```
-//192.168.1.10/Musik  /mnt/nas/musik  cifs  credentials=/home/DU/.nas-login,uid=DU,gid=DU,iocharset=utf8,_netdev,nofail  0  0
-```
-
-(`sudo apt install cifs-utils`. In `~/.nas-login` stehen `username=…` und `password=…`.)
-Dann in Homify den Ordner `/mnt/nas/musik` eintragen. Ist die Freigabe nicht gemountet, erkennt
-Homify den leeren Ordner und löscht nichts aus der Bibliothek.
-
-## Oder: Docker (z. B. direkt auf dem NAS)
-
-In `docker-compose.yml` den Musikordner eintragen, dann:
-
-```bash
-docker compose up -d
-```
-
-## Datenablage
-
-Alles, was Homify speichert, liegt im Ordner `data/`: Datenbank (Playlists, Likes, Verlauf),
-Cover-Cache, Umwandlungs-Cache, Einstellungen, Protokolle und die spotDL-Umgebung.
-Deine Musikdateien werden nie verändert. Zum Sichern reicht `data/homify.db` + `data/config.json`.
-
-Passwort vergessen? `.venv\Scripts\python -m homify reset-password NAME` (Windows) bzw.
-`.venv/bin/python -m homify reset-password NAME` (Ubuntu).
-
 ## Probleme?
 
 | Problem | Lösung |
 |---|---|
-| Handy erreicht Homify nicht | Gleiches WLAN? Windows-Firewall: eingehend TCP 8484 für private Netzwerke erlauben (macht `Installieren.bat`). Netzwerkprofil in Windows auf „Privat“ stellen. |
-| Musikordner „nicht erreichbar“ | Pfad im Explorer testen. NAS-Anmeldedaten in Windows speichern. Bei Netzlaufwerken lieber den UNC-Pfad `\\NAS\Musik` nehmen. |
-| Downloads schlagen fehl | Einstellungen → Downloads → **spotDL aktualisieren**. Das Protokoll des Downloads (Listen-Symbol) zeigt den Grund. |
-| Ein Song spielt nicht | Homify wandelt automatisch um. Sonst unter Einstellungen → System den Cache leeren oder `Starten-mit-Konsole.bat` nutzen und die Meldung ansehen. |
-| Oberfläche bleibt schwarz | Seite neu laden (Strg + F5). Protokoll: `data/logs/homify.log` |
+| NAS: „Anmeldung fehlgeschlagen“ | Benutzer/Passwort des UGOS-Kontos prüfen; der Benutzer braucht Rechte auf den freigegebenen Ordner. |
+| NAS: „nicht erreichbar“ | IP-Adresse prüfen, SMB in UGOS aktiviert? Server und NAS im selben Netz? |
+| Handy erreicht den Server nicht | Zuhause: gleiches WLAN, Firewall (ufw/Windows) offen? Unterwegs: Tailscale-App an? |
+| Downloads schlagen fehl | *Einstellungen → Downloads → spotDL aktualisieren*; das Protokoll des Downloads zeigt den Grund. |
+| Windows-App warnt beim Installieren | Die App ist nicht signiert: *Weitere Informationen → Trotzdem ausführen*. |
+| Android: „App nicht installiert“ | Alte Version zuerst deinstallieren (passiert nur, wenn der Signaturschlüssel gewechselt wurde). |
+| Passwort vergessen | `.venv/bin/python -m homify reset-password NAME` (Windows: `.venv\Scripts\python …`) |
+
+Protokoll: `data/logs/homify.log`. Alles, was Homify speichert, liegt in `data/` – die
+Musikdateien selbst werden nie verändert.
+
+---
 
 ## Für Entwickler
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # Tests (erzeugen eine kleine Test-Bibliothek mit ffmpeg)
-.venv/bin/python -m homify run      # Server auf http://localhost:8484
+.venv/bin/python -m pytest                     # Tests
+HOMIFY_TEST_SMB="host,freigabe,user,pw" .venv/bin/python -m pytest tests/test_nas.py   # mit echtem NAS
+.venv/bin/python -m homify run                 # Server auf http://localhost:8484
 ```
 
-Aufbau: `homify/` enthält den Python-Server (FastAPI, SQLite, mutagen, ffmpeg über
-imageio-ffmpeg). `homify/static/` enthält die Oberfläche (reines HTML/CSS/JavaScript ohne
-Build-Schritt). spotDL läuft in einer eigenen Python-Umgebung (`data/tools/spotdl-venv`), weil
-es eigene, ältere Bibliotheksversionen braucht. Homify spricht über `homify/spotdl_bridge.py`
-mit ihr.
+| Ordner | Inhalt |
+|---|---|
+| `homify/` | Server: FastAPI, SQLite, mutagen, ffmpeg (imageio-ffmpeg), SMB (smbprotocol) |
+| `homify/static/` | Weboberfläche (HTML/CSS/JavaScript ohne Build-Schritt) |
+| `android/` | Android-App (Kotlin, WebView + Wiedergabedienst) |
+| `desktop/` | Windows-App (Electron + NSIS-Installer) |
+| `ubuntu/`, `windows/` | Installations- und Startskripte |
+| `.github/workflows/` | Tests und automatischer Bau der Apps |
+
+spotDL läuft in einer eigenen Python-Umgebung (`data/tools/spotdl-venv`), weil es eigene
+Bibliotheksversionen braucht; Homify spricht über `homify/spotdl_bridge.py` mit ihr.
+
+Die Android-App wird mit dem mitgelieferten Homelab-Schlüssel (`android/homify-release.keystore`)
+signiert, damit Updates ohne Deinstallieren gehen. Wer einen eigenen Schlüssel möchte, hinterlegt
+ihn als GitHub-Secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`.
