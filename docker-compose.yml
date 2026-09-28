@@ -1,0 +1,13 @@
+# docker compose up -d   →   http://<server>:8484
+services:
+  homify:
+    build: .
+    container_name: homify
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    environment:
+      - HOMIFY_MUSIC_DIRS=/music
+    volumes:
+      - ./data:/data            # Datenbank, Cover, Einstellungen
+      - /pfad/zur/musik:/music  # <- hier den Musikordner des NAS eintragen
