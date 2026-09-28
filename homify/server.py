@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, remote, user_prefs
+from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, playlist_import, remote, user_prefs
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
     db.init()
     apply_runtime_settings()
     scanner.listeners.append(invalidate_library_index)
+    scanner.listeners.append(lambda _st: playlist_import.sync_jobs())  # geholte Songs in importierte Playlists
     scanner.listeners.append(lambda _status: analyzer.kick())
     downloads.start()
     scheduler.start()
@@ -595,6 +596,20 @@ def generate_playlist(body: PlaylistGenerate, user: dict = Depends(auth.current_
     return library.playlist_summary(pid, user["id"])
 
 
+class PlaylistImport(BaseModel):
+    url: str = Field(pattern=r"^https://open\.spotify\.com/", max_length=500)
+    title: str = Field(default="", max_length=200)
+    spotify_ids: list[str] = Field(min_length=1, max_length=5000)
+    library_ids: dict[str, str] = Field(default_factory=dict)
+
+
+@app.post("/api/playlists/import")
+def import_spotify_playlist(body: PlaylistImport, user: dict = Depends(auth.current_user)):
+    """Spotify-Playlist mit den vorhandenen Songs als Homify-Playlist speichern (ohne Download)."""
+    pid = playlist_import.import_link(user["id"], body.url, body.title, body.spotify_ids, body.library_ids)
+    return library.playlist_summary(pid, user["id"])
+
+
 @app.get("/api/playlists/{playlist_id}")
 def playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
     data = library.playlist_detail(playlist_id, user["id"])
@@ -702,10 +717,12 @@ class DownloadIn(BaseModel):
     image: str = ""
     spotify_ids: list[str] = Field(default_factory=list, max_length=5000)
     total: int = 0
+    library_ids: dict[str, str] = Field(default_factory=dict)  # Spotify-ID -> Song, der schon da ist
 
 
 @app.get("/api/downloads")
 def list_downloads(user: dict = Depends(auth.current_user)):
+    playlist_import.sync_jobs(scanning=bool(scanner.status.get("running")))
     jobs = downloads.list()
     # Fertige Songs gleich mitliefern, damit man sie direkt abspielen kann
     for job in jobs:
@@ -719,6 +736,8 @@ def list_downloads(user: dict = Depends(auth.current_user)):
             job["track_ids"] = list(dict.fromkeys([r["id"] for r in rows] + known))
             if job["track_ids"] and not job.get("auto_liked") and not scanner.status.get("running"):
                 _auto_like(job)
+        if job["kind"] == "playlist":
+            job["playlist_id"] = playlist_import.playlist_for(user["id"], job["query"])
         if not user["is_admin"] and job.get("user_id") != user["id"]:
             job.pop("log", None)
     return {"jobs": jobs, "active": downloads.active_count(), "scan": scanner.status}
@@ -740,7 +759,7 @@ def _auto_like(job: dict[str, Any]) -> None:
 @app.post("/api/downloads")
 def add_download(body: DownloadIn, user: dict = Depends(auth.download_user)):
     return downloads.add(user["id"], body.query, body.kind, body.title, body.subtitle, body.image,
-                         body.spotify_ids, body.total)
+                         body.spotify_ids, body.total, body.library_ids)
 
 
 @app.post("/api/downloads/{job_id}/cancel")

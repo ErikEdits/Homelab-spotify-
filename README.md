@@ -51,6 +51,10 @@ in deine Bibliothek.
   und auf Künstlerseiten): Homify baut eine Playlist ähnlich wie ein Song oder Künstler, nach Genre,
   Jahrzehnt, aus deinen Top-Songs, Lieblingssongs, neuen Songs, „Wiederentdecken“ oder zufällig –
   mit Wunschlänge und Namen.
+- **Spotify-Playlists übernehmen**: Holst du einen Spotify-Playlist-Link, entsteht dieselbe Playlist auch in
+  Homify – in der Original-Reihenfolge. Vorhandene Songs sind sofort drin, frisch geholte kommen nach dem
+  Download automatisch dazu (auch wenn du einzelne Songs daraus holst). Ist schon alles da, speichert
+  „Als Playlist speichern“ sie mit einem Klick. Denselben Link später nochmal holen ergänzt die Playlist.
 - **Playlists veröffentlichen**: Ein Knopf in der Playlist macht sie für alle Homify-Benutzer sichtbar
   („Von anderen geteilt“ auf Startseite und in der Bibliothek). Die anderen können sie hören, ihr folgen
   oder als eigene Playlist kopieren – bearbeiten kann sie nur der Besitzer. Ein zweiter Klick macht sie

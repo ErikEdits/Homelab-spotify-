@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any
 
-from . import db, dedup
+from . import db, dedup, playlist_import
 from . import storage as storages
 from .config import DATA_DIR, IS_WINDOWS, config
 from .media import find_ffmpeg
@@ -144,7 +144,7 @@ def move_to_library(staging: str) -> dict[str, Any]:
     """Fertige Downloads aus dem Zwischenordner in den Speicherort (App-Ordner/NAS) verschieben.
     Songs, die es in der Bibliothek schon gibt, werden verworfen – jeder Song nur einmal."""
     target = storages.primary()
-    result: dict[str, Any] = {"moved": 0, "duplicates": 0, "errors": [], "known_ids": []}
+    result: dict[str, Any] = {"moved": 0, "duplicates": 0, "errors": [], "known_ids": [], "known_map": {}}
     files = [rel for rel, _size, _mtime in storages.LocalStorage(staging).walk()
              if not rel.endswith((".part", ".temp", ".tmp")) and not os.path.basename(rel).startswith(".")]
     audio = [rel for rel in files if os.path.splitext(rel)[1].lower() in AUDIO_EXTENSIONS]
@@ -168,6 +168,9 @@ def move_to_library(staging: str) -> dict[str, Any]:
                 result["duplicates"] += 1
                 if existing:
                     result["known_ids"].append(existing)
+                    sid = spotify_id_from_url(info.source_url) if info else ""
+                    if sid:
+                        result["known_map"][sid] = existing  # für importierte Playlists
                 continue
             target.put(local, rel, move=True)
             result["moved"] += 1
@@ -205,6 +208,7 @@ def _row_to_job(row: dict[str, Any]) -> dict[str, Any]:
     job = dict(row)
     job["spotify_ids"] = json.loads(job.get("spotify_ids") or "[]")
     job["known_ids"] = json.loads(job.get("known_ids") or "[]")
+    job.pop("known_map", None)
     job["log"] = (job.get("log") or "").splitlines()[-200:]
     return job
 
@@ -238,19 +242,24 @@ class DownloadManager:
         self._kill()
 
     def add(self, user_id: int, query: str, kind: str = "track", title: str = "", subtitle: str = "",
-            image: str = "", spotify_ids: list[str] | None = None, total: int = 0) -> dict[str, Any]:
+            image: str = "", spotify_ids: list[str] | None = None, total: int = 0,
+            library_ids: dict[str, str] | None = None) -> dict[str, Any]:
         query = validate_query(query)
         self._check_daily_limit(user_id)
+        known = {k: v for k, v in (library_ids or {}).items() if k and v}
+        if kind == "playlist" and spotify_ids and "open.spotify.com/" in query:
+            # Playlist gleich in Homify anlegen – vorhandene Songs stehen sofort drin
+            playlist_import.import_link(user_id, query, title, spotify_ids, known)
         existing = db.query_one(
             "SELECT id FROM downloads WHERE query = ? AND status IN ('queued', 'running')", (query,)
         )
         if existing:
             return self.get(existing["id"])
         cur = db.execute(
-            "INSERT INTO downloads (user_id, query, kind, title, subtitle, image, status, total, spotify_ids, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+            "INSERT INTO downloads (user_id, query, kind, title, subtitle, image, status, total, spotify_ids, "
+            "known_map, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
             (user_id, query, kind, title or query, subtitle, image, int(total or (1 if kind == "track" else 0)),
-             json.dumps(spotify_ids or []), time.time()),
+             json.dumps(spotify_ids or []), json.dumps(known), time.time()),
         )
         self._wake.set()
         return self.get(int(cur.lastrowid))
@@ -292,7 +301,8 @@ class DownloadManager:
     def retry(self, job_id: int) -> None:
         db.execute(
             "UPDATE downloads SET status = 'queued', done = 0, failed = 0, message = '', log = '', attempts = 0, "
-            "started_at = NULL, finished_at = NULL WHERE id = ? AND status NOT IN ('queued', 'running')",
+            "playlist_synced = 0, started_at = NULL, finished_at = NULL "
+            "WHERE id = ? AND status NOT IN ('queued', 'running')",
             (job_id,),
         )
         self._wake.set()
@@ -371,15 +381,17 @@ class DownloadManager:
                 wanted.add(t["id"])
         skip = owned | set(known)
         known_ids = list(dict.fromkeys(known.values()))
+        known_map = playlist_import.merge_known(job_id, known)
         if wanted and wanted <= skip:
             shutil.rmtree(staging, ignore_errors=True)
             db.execute(
                 "UPDATE downloads SET status = 'done', message = ?, done = ?, total = ?, failed = 0, known_ids = ?, "
-                "started_at = ?, finished_at = ? WHERE id = ?",
-                (summary(0, len(wanted)), len(wanted), len(wanted), json.dumps(known_ids), time.time(), time.time(),
-                 job_id),
+                "known_map = ?, playlist_synced = 0, started_at = ?, finished_at = ? WHERE id = ?",
+                (summary(0, len(wanted)), len(wanted), len(wanted), json.dumps(known_ids), json.dumps(known_map),
+                 time.time(), time.time(), job_id),
             )
             log.info("Download %s: alles schon vorhanden", job_id)
+            playlist_import.sync_jobs()  # kein Einlesen nötig -> Playlist gleich vervollständigen
             return
         already = len(wanted & skip)  # schon vorhanden -> spotDL überspringt sie (Archiv)
         archive = staging.parent / f"job-{job_id}.archive"
@@ -445,6 +457,7 @@ class DownloadManager:
             done = available  # spotDL-Ausgabe zählt nicht, wenn das Speichern scheiterte
         done = max(done, available)
         known_ids = list(dict.fromkeys(known_ids + moved["known_ids"]))
+        known_map.update(moved["known_map"])
         total = max(total, done)
         failed = max(total - done, 0)
         skipped = done - new
@@ -477,9 +490,9 @@ class DownloadManager:
             return
         db.execute(
             "UPDATE downloads SET status = ?, message = ?, done = ?, failed = ?, total = ?, log = ?, finished_at = ?, "
-            "attempts = ?, known_ids = ? WHERE id = ?",
+            "attempts = ?, known_ids = ?, known_map = ?, playlist_synced = 0 WHERE id = ?",
             (status, message, done, failed, total, "\n".join(lines[-300:]), time.time(), attempts,
-             json.dumps(known_ids), job_id),
+             json.dumps(known_ids), json.dumps(known_map), job_id),
         )
         log.info("Download %s: %s (%s)", job_id, status, message)
         if done > 0:
