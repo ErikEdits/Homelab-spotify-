@@ -549,7 +549,7 @@ function systemSection(sys) {
       h("dt", {}, "Homify-Version"), h("dd", {}, sys.version),
       h("dt", {}, "Rechner"), h("dd", {}, `${sys.hostname} (${sys.platform})`),
       h("dt", {}, "ffmpeg"), h("dd", {}, sys.ffmpeg || "nicht gefunden"),
-      h("dt", {}, "Lautheit gemessen"), h("dd", {}, ld.running ? `läuft … noch ${ld.remaining} Songs` : ld.remaining ? `${ld.remaining} Songs warten auf Messung` : "alle Songs")),
+      h("dt", {}, "Klang analysiert"), h("dd", {}, ld.running ? `läuft … noch ${ld.remaining} Songs` : ld.remaining ? `${ld.remaining} Songs warten auf die Analyse` : "alle Songs")),
     h("div", { class: "row-actions" },
       h("button", { class: "btn btn-small btn-outline", onclick: restartServer }, icon("refresh", "sm"), "Neu starten"),
       h("button", { class: "btn btn-small btn-danger", onclick: async () => {

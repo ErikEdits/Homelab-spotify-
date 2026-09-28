@@ -1,5 +1,11 @@
 // Wiedergabe: Warteschlange, Zufall, Wiederholen, Überblenden/lückenlos (zwei Audio-Elemente),
 // Lautstärke angleichen (ReplayGain), Equalizer (Web Audio), Autoplay, Media Session
+//
+// Klangkette (Web Audio – am PC immer, am Handy nur mit Equalizer, weil Android/iOS sonst im
+// Hintergrund stottern können):
+//   Deck → Pegel (Angleichen, darf leise Songs anheben) → Blende (Überblenden/Pausieren, läuft auf dem
+//   Audio-Takt) → Lautstärke → Equalizer → Limiter (nur aktiv, wenn etwas angehoben wird) → Ausgang
+// Ohne Web Audio regelt das Audio-Element selbst die Lautstärke (dann ohne Anheben).
 
 import { api, emit, on, prefs, streamUrl } from "./api.js";
 import { coverUrl, toast } from "./ui.js";
@@ -15,7 +21,35 @@ const EQ_BANDS = [
 // Zielpegel relativ zu ReplayGain (-18 LUFS): ergibt etwa -23 / -14 / -11 LUFS (wie bei Spotify)
 const LEVEL_DB = { quiet: -5, normal: 4, loud: 7 };
 const ASSUMED_GAIN_DB = -8;  // Songs ohne Messwert: typischer Pegel heutiger Musik
+const MAX_BOOST_DB = 12;     // leise Songs höchstens so weit anheben
+const PEAK_CEILING_DB = -1;  // beim Anheben Spitzen unter -1 dBTP halten (wie Spotify „Normal“)
+const LIMIT_DB = -1;         // Limiter-Schwelle, wenn etwas angehoben wird
+const LIMIT_RATIO = 20;
 const PAUSE_FADE_MS = 250;
+const GAPLESS_OVERLAP = 0.06; // lückenlos: Songs überlappen minimal – kein Knacks, keine Pause
+const SEEK_DIP = 0.012;       // Spulen: ganz kurz aus- und wieder einblenden (kein Knacksen)
+const TRIM_MIN = 0.5;         // Stille erst ab dieser Länge kürzen
+const TRIM_KEEP = 0.15;       // … und so viel davon stehen lassen (natürliche Atempause)
+const VOLUME_EXP = 2.5;       // Lautstärke-Regler folgt dem Gehör (50 % ≈ -15 dB statt -6 dB)
+
+// Handys und Tablets (auch Android-Tablets und iPads, die sich als Mac ausgeben)
+const IS_MOBILE = navigator.userAgentData?.mobile === true
+  || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+const dbToGain = (db) => Math.pow(10, db / 20);
+/** Regler-Stellung (0–1) -> Verstärkung, wie das Ohr Lautstärke empfindet. */
+export const perceptualVolume = (v) => (v <= 0 ? 0 : Math.pow(Math.min(1, v), VOLUME_EXP));
+/** Gleich laute Überblendung (Equal Power): rein sin, raus cos – keine Delle in der Mitte. */
+export function fadeCurve(from, to, p) {
+  const k = to >= from ? Math.sin(p * Math.PI / 2) : 1 - Math.cos(p * Math.PI / 2);
+  return from + (to - from) * k;
+}
+/** Makeup-Gain, den ein DynamicsCompressor (Web-Audio-Spezifikation) automatisch draufrechnet. */
+export function compressorMakeupDb(thresholdDb, ratio) {
+  const fullRangeDb = thresholdDb + (0 - thresholdDb) / ratio;  // Kennlinie bei 0 dBFS (Knie 0)
+  return -0.6 * fullRangeDb;
+}
 
 function shuffleArray(arr) {
   const a = arr.slice();
@@ -48,6 +82,12 @@ class Player {
     this.shuffle = prefs.get("shuffle", false);
     this.repeat = prefs.get("repeat", "off"); // off | all | one
     this.volume = prefs.get("volume", 0.8);
+    if (prefs.get("volume_curve", 0) < 1) {
+      // früher linear: Regler so umrechnen, dass es nach dem Update genauso laut bleibt
+      this.volume = Math.pow(Math.max(0, Math.min(1, this.volume)), 1 / VOLUME_EXP);
+      prefs.set("volume", this.volume);
+      prefs.set("volume_curve", 1);
+    }
     this.muted = prefs.get("muted", false);
     this.transcoding = false;
     this.reported = false;
@@ -56,7 +96,8 @@ class Player {
     this.preloaded = null;  // {uid, deck, transcoding}
     this.fade = null;       // laufende Überblendung {old}
     this.pausing = false;
-    this.ctx = null;        // Web-Audio (nur wenn der Equalizer benutzt wird)
+    this.ctx = null;        // Web-Audio-Klangkette (am PC immer, am Handy nur mit Equalizer)
+    this.canOpus = decks[0].canPlayType('audio/ogg; codecs="opus"') !== "";
 
     for (const d of decks) {
       d._fade = 1;
@@ -93,7 +134,11 @@ class Player {
     d.addEventListener("canplay", ready);
     d.addEventListener("seeked", () => { if (is()) emit("seeked"); });
     d.addEventListener("loadedmetadata", () => {
-      if (!is()) return;
+      if (!is()) {
+        // vorgeladener Song: gleich hinter die Stille am Anfang springen
+        if (d._startAt) { try { d.currentTime = d._startAt; } catch { /* ignorieren */ } }
+        return;
+      }
       if (this.pendingSeek != null) {
         try { d.currentTime = this.pendingSeek; } catch { /* ignorieren */ }
         this.pendingSeek = null;
@@ -167,11 +212,10 @@ class Player {
     const d = this.audio;
     this.pausing = false;
     if (setting("fade_pause")) {
-      if (d.paused) d._fade = 0;
-      this._animate(PAUSE_FADE_MS, (p, from) => { d._fade = from + (1 - from) * p; }, null, d._fade);
+      this._fadeDecks([[d, d.paused ? 0 : d._fade, 1]], PAUSE_FADE_MS);
     } else {
       this._stopAnimation();
-      d._fade = 1;
+      this._setFade(d, 1);
     }
     this._applyVolume();
     if (d.paused) d.play().catch((e) => this._playFailed(e));
@@ -182,15 +226,16 @@ class Player {
     const d = this.audio;
     if (d.paused || this.pausing) return;
     this._finishCrossfade();
+    this._cancelTransition();
     if (!setting("fade_pause")) { d.pause(); return; }
     this.pausing = true;
     this._state();
-    this._animate(PAUSE_FADE_MS, (p, from) => { d._fade = from * (1 - p); }, () => {
+    this._fadeDecks([[d, d._fade, 0]], PAUSE_FADE_MS, () => {
       this.pausing = false;
       d.pause();
-      d._fade = 1;
+      this._setFade(d, 1);
       this._applyVolume();
-    }, d._fade);
+    });
   }
 
   next(auto = false) {
@@ -244,17 +289,45 @@ class Player {
   seek(seconds) {
     if (!this.current) return;
     this._finishCrossfade();
-    const dur = this.audio.duration || this.current.duration || 0;
+    const d = this.audio;
+    const dur = d.duration || this.current.duration || 0;
     const t = Math.max(0, Math.min(seconds, dur ? dur - 0.25 : seconds));
-    if (this.audio.readyState >= 1) this.audio.currentTime = t;
-    else this.pendingSeek = t;
+    this._cancelTransition();
+    if (d.readyState < 1) { this.pendingSeek = t; emit("time", this.time()); return; }
+    if (this.ctx && d._fader && !d.paused && !this.pausing && !document.hidden) {
+      // Kurz ausblenden, springen, wieder einblenden – sonst knackt es an der Schnittstelle
+      const g = d._fader.gain;
+      const now = this.ctx.currentTime;
+      const token = (this._seekToken = {});
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(0, now + SEEK_DIP);
+      clearTimeout(this._seekTimer);
+      this._seekTimer = setTimeout(() => {
+        if (this._seekToken !== token || d !== this.audio) return;
+        d.currentTime = t;
+        let done = false;
+        const back = () => {
+          if (done || this._seekToken !== token) return;  // nur einmal, und nur für das letzte Spulen
+          done = true;
+          const at = this.ctx.currentTime;
+          g.cancelScheduledValues(at);
+          g.setValueAtTime(0, at);
+          g.linearRampToValueAtTime(d._fade ?? 1, at + 0.04);
+        };
+        d.addEventListener("seeked", back, { once: true });
+        setTimeout(back, 400);  // Sicherheitsnetz, falls „seeked“ ausbleibt
+      }, SEEK_DIP * 1000 + 3);
+    } else {
+      d.currentTime = t;
+    }
     emit("time", this.time());
   }
 
   seekBy(delta) { this.seek(this.audio.currentTime + delta); }
 
   setVolume(v) {
-    this.volume = Math.max(0, Math.min(1, v));
+    this.volume = Math.max(0, Math.min(1, Number(v) || 0));
     if (this.volume > 0 && this.muted) this.muted = false;
     this._volumeChanged();
   }
@@ -314,7 +387,7 @@ class Player {
   }
 
   _url(track, transcode) {
-    return streamUrl(track, { transcode, quality: this.quality });
+    return streamUrl(track, { transcode, quality: this.quality, opus: this.canOpus });
   }
 
   _rate() {
@@ -326,27 +399,34 @@ class Player {
     const track = this.current;
     if (!track) return;
     this.reported = false;
-    this.pendingSeek = resumeAt;
     this.pausing = false;
+    this._cancelTransition();
     const pre = this.preloaded;
     this.preloaded = null;
+    const wasPlaying = !this.audio.paused && !!this.audio.getAttribute("src");
     let deck;
     if (pre && pre.uid === track._uid && pre.deck === this.other && pre.deck.getAttribute("src")) {
-      deck = pre.deck;  // vorgeladen -> startet ohne Pause
+      deck = pre.deck;  // vorgeladen (und schon hinter der Stille) -> startet ohne Pause
       this.transcoding = pre.transcoding;
+      this.pendingSeek = resumeAt ?? (deck.readyState >= 1 ? null : deck._startAt ?? null);
     } else {
-      deck = this.fade ? this.other : this.audio;
+      // Mit Web Audio beim Weiterschalten das andere Deck nehmen, damit der alte Song kurz
+      // ausblenden kann statt mitten in der Welle abzureißen (sonst knackt es)
+      const quickSwitch = !this.fade && !!this.ctx && wasPlaying;
+      deck = this.fade || quickSwitch ? this.other : this.audio;
       if (!this.fade) this._unloadOther();
       this.transcoding = this._needsTranscode(track);
       deck.src = this._url(track, this.transcoding);
+      this.pendingSeek = resumeAt ?? this._startOffset(track);
     }
+    deck._startAt = null;
     if (deck !== this.audio) {
       const old = this.audio;
       this.active = this.decks.indexOf(deck);
-      if (!this.fade) { old.pause(); this._unload(old); }
+      if (!this.fade) this._retire(old);
     }
     deck._track = track;
-    deck._fade = this.fade ? 0 : 1;
+    this._setFade(deck, this.fade ? 0 : 1);
     deck.defaultPlaybackRate = deck.playbackRate = this._rate();
     this._applyVolume();
     this.loading = deck.readyState < 3;
@@ -361,13 +441,32 @@ class Player {
   }
 
   _unload(d) {
+    d._retiring = null;
     if (d.getAttribute("src")) {
       d.pause();
       d.removeAttribute("src");
       d.load();
     }
     d._track = null;
-    d._fade = 1;
+    d._startAt = null;
+    this._setFade(d, 1);
+  }
+
+  /** Altes Deck beim Weiterschalten: mit Web Audio ganz kurz ausblenden, dann entladen. */
+  _retire(d) {
+    if (!this.ctx || !d._fader || d.paused) { this._unload(d); return; }
+    const token = {};
+    d._retiring = token;
+    const g = d._fader.gain;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(0, now + 0.03);
+    setTimeout(() => {
+      if (d._retiring === token && d !== this.audio && this.fade?.old !== d && this.preloaded?.deck !== d) {
+        this._unload(d);
+      }
+    }, 60);
   }
 
   _unloadOther() {
@@ -391,11 +490,13 @@ class Player {
     if (!next) { if (this.preloaded) this._unloadOther(); return; }
     const deck = this.other;
     const transcoding = this._needsTranscode(next);
+    deck._retiring = null;
+    deck._startAt = this._startOffset(next);
     deck.src = this._url(next, transcoding);
     deck.preload = "auto";
     deck.load();
     deck._track = next;
-    deck._fade = 1;
+    this._setFade(deck, 1);
     deck.defaultPlaybackRate = deck.playbackRate = this._rate();
     this.preloaded = { uid: next._uid, deck, transcoding };
   }
@@ -430,12 +531,10 @@ class Player {
     else if (this.repeat === "all" && !this.shuffle) this.index = 0;
     else return;
     this.fade = { old };
+    const from = old._fade ?? 1;
     this._load(true);
     const fresh = this.audio;
-    this._animate(seconds * 1000, (p) => {
-      old._fade = 1 - p;
-      fresh._fade = p;
-    }, () => this._finishCrossfade());
+    this._fadeDecks([[old, from, 0], [fresh, 0, 1]], seconds * 1000, () => this._finishCrossfade());
     emit("queue");
   }
 
@@ -445,17 +544,51 @@ class Player {
     this.fade = null;
     this._stopAnimation();
     if (old !== this.audio) this._unload(old);
-    this.audio._fade = 1;
+    this._setFade(this.audio, 1);
     this._applyVolume();
   }
 
-  _animate(ms, step, done, from = 1) {
+  /** Blende sofort setzen (0 = stumm, 1 = voll). */
+  _setFade(d, value) {
+    d._fade = value;
+    if (this.ctx && d._fader) {
+      const g = d._fader.gain;
+      const now = this.ctx.currentTime;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(value, now);
+    }
+  }
+
+  /**
+   * Blenden [[Deck, von, bis], …] in ms – gleich laut (Equal Power). Mit Web Audio läuft die Kurve auf dem
+   * Audio-Takt: butterweich und auch dann exakt, wenn der Browser Timer im Hintergrund drosselt.
+   */
+  _fadeDecks(list, ms, done) {
     this._stopAnimation();
+    const graph = !!this.ctx;
+    if (graph) {
+      const seconds = Math.max(0.005, ms / 1000);
+      const now = this.ctx.currentTime;
+      const n = Math.max(2, Math.min(2048, Math.ceil(seconds * 200)));
+      for (const [d, from, to] of list) {
+        if (!d._fader) continue;
+        const curve = new Float32Array(n);
+        for (let i = 0; i < n; i++) curve[i] = fadeCurve(from, to, i / (n - 1));
+        const g = d._fader.gain;
+        g.cancelScheduledValues(now);
+        try {
+          g.setValueCurveAtTime(curve, now, seconds);
+        } catch {
+          g.setValueAtTime(from, now);
+          g.linearRampToValueAtTime(to, now + seconds);
+        }
+      }
+    }
     const start = performance.now();
     const tick = () => {
       const p = Math.min(1, (performance.now() - start) / ms);
-      step(p, from);
-      this._applyVolume();
+      for (const [d, from, to] of list) d._fade = fadeCurve(from, to, p);
+      if (!graph) this._applyVolume();
       if (p >= 1) {
         this._stopAnimation();
         done?.();
@@ -470,31 +603,67 @@ class Player {
     this._animTimer = null;
   }
 
-  _gainFactor(track) {
+  /**
+   * Lautstärke angleichen: Verstärkung in dB für diesen Song. Wie bei Spotify: ganze Alben behalten ihre
+   * Dynamik („Pro Album“ im Album), sonst pro Song. Leise Songs werden mit Web Audio angehoben – bei
+   * „Normal“/„Leise“ nur so weit, dass die echten Spitzen unter -1 dBTP bleiben, bei „Laut“ mit Limiter.
+   */
+  _levelDb(track) {
     const mode = setting("normalize");
-    if (!track || !mode || mode === "off") return 1;
-    let gain = mode === "album" ? (track.album_gain ?? track.gain) : (track.gain ?? track.album_gain);
+    if (!track || !mode || mode === "off") return 0;
+    const albumCtx = mode === "album" && this.context?.type === "album" && track.album_gain != null;
+    let gain = albumCtx ? track.album_gain : (track.gain ?? track.album_gain);
+    const peak = albumCtx ? (track.album_peak ?? track.peak) : track.peak;
+    const level = setting("normalize_level");
     if (gain == null) gain = ASSUMED_GAIN_DB;
-    const db = gain + (LEVEL_DB[setting("normalize_level")] ?? LEVEL_DB.normal);
-    return Math.min(1, Math.pow(10, db / 20));
+    let db = gain + (LEVEL_DB[level] ?? LEVEL_DB.normal);
+    if (db > 0) {
+      if (!this.ctx) db = 0;  // das Audio-Element kann nicht über 100 %
+      else if (level === "loud") db = Math.min(db, MAX_BOOST_DB);
+      else db = Math.min(db, MAX_BOOST_DB, peak != null ? Math.max(0, PEAK_CEILING_DB - peak) : 0);
+    }
+    return db;
   }
 
   _applyVolume() {
-    const base = this.muted ? 0 : this.volume;
-    for (const d of this.decks) {
-      const v = Math.max(0, Math.min(1, base * this._gainFactor(d._track) * (d._fade ?? 1)));
-      if (d._gain && this.ctx) {
+    const master = this.muted ? 0 : perceptualVolume(this.volume);
+    if (this.ctx && this.master) {
+      const now = this.ctx.currentTime;
+      this.master.gain.setTargetAtTime(master, now, 0.015);
+      for (const d of this.decks) {
         if (d.volume !== 1) d.volume = 1;
-        d._gain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.015);
-      } else {
-        d.volume = v;
+        d._level?.gain.setTargetAtTime(dbToGain(this._levelDb(d._track)), now, 0.015);
       }
+      this._updateLimiter();
+      return;
+    }
+    for (const d of this.decks) {
+      d.volume = Math.max(0, Math.min(1, master * dbToGain(this._levelDb(d._track)) * (d._fade ?? 1)));
     }
   }
 
-  // ------------------------------------------------------------ intern: Equalizer (Web Audio)
+  /** Limiter nur einschalten, wenn etwas angehoben wird (Equalizer oder leiser Song) – sonst unverfälscht. */
+  _updateLimiter() {
+    if (!this.limiter) return;
+    const boosting = (this._eqBoost || 0) > 0 || this.decks.some((d) => d._track && this._levelDb(d._track) > 0);
+    if (boosting === this._limiting) return;
+    this._limiting = boosting;
+    const now = this.ctx.currentTime;
+    this.limiter.threshold.setTargetAtTime(boosting ? LIMIT_DB : 0, now, 0.05);
+    this.limiter.ratio.setTargetAtTime(boosting ? LIMIT_RATIO : 1, now, 0.05);
+    // der Kompressor legt automatisch Pegel drauf – genau den wieder abziehen, sonst wird es lauter
+    this.makeup.gain.setTargetAtTime(dbToGain(boosting ? -compressorMakeupDb(LIMIT_DB, LIMIT_RATIO) : 0), now, 0.05);
+  }
+
+  // ------------------------------------------------------------ intern: Klangkette (Web Audio)
+  /** Web Audio am PC immer (Anheben, Limiter, weiche Blenden); am Handy nur mit Equalizer. */
+  _wantGraph() { return !!setting("eq_enabled") || !IS_MOBILE; }
+
+  /** Browser erlauben Web Audio erst, nachdem jemand auf der Seite geklickt/getippt hat. */
+  _mayStartAudio() { return !navigator.userActivation || navigator.userActivation.hasBeenActive; }
+
   _unlockAudio() {
-    if (setting("eq_enabled") && !this.ctx) this._applyEq(true);
+    if (!this.ctx && this._wantGraph() && this._mayStartAudio() && this._ensureGraph()) this._applyEq();
     if (this.ctx?.state === "suspended") this.ctx.resume().catch(() => {});
   }
 
@@ -503,8 +672,15 @@ class Player {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return false;
     try {
-      const ctx = new AC();
+      let ctx;
+      try {
+        ctx = new AC({ latencyHint: "playback" });  // größere Puffer: keine Aussetzer, wenn der PC zu tun hat
+      } catch {
+        ctx = new AC();
+      }
+      const master = ctx.createGain();
       const pre = ctx.createGain();
+      master.connect(pre);
       const filters = EQ_BANDS.map(([freq, type]) => {
         const f = ctx.createBiquadFilter();
         f.type = type;
@@ -514,54 +690,61 @@ class Player {
       });
       let node = pre;
       for (const f of filters) { node.connect(f); node = f; }
-      // Limiter am Ende: fängt Spitzen ab, wenn der Equalizer anhebt – so bleibt es laut, ohne zu verzerren
+      // Limiter am Ende: fängt Spitzen ab, wenn etwas angehoben wird – laut, ohne zu verzerren
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = 0;
       limiter.knee.value = 0;
       limiter.ratio.value = 1;
       limiter.attack.value = 0.002;
-      limiter.release.value = 0.12;
+      limiter.release.value = 0.15;
+      const makeup = ctx.createGain();
       node.connect(limiter);
-      limiter.connect(ctx.destination);
+      limiter.connect(makeup);
+      makeup.connect(ctx.destination);
       for (const d of this.decks) {
-        const gain = ctx.createGain();
-        ctx.createMediaElementSource(d).connect(gain);
-        gain.connect(pre);
-        d._gain = gain;
+        const level = ctx.createGain();
+        const fader = ctx.createGain();
+        ctx.createMediaElementSource(d).connect(level);
+        level.connect(fader);
+        fader.connect(master);
+        fader.gain.value = d._fade ?? 1;
+        d._level = level;
+        d._fader = fader;
       }
       this.ctx = ctx;
+      this.master = master;
       this.eqPre = pre;
       this.eqFilters = filters;
       this.limiter = limiter;
+      this.makeup = makeup;
+      this._limiting = false;
       return true;
     } catch (e) {
-      console.warn("Equalizer nicht verfügbar", e);
+      console.warn("Web Audio nicht verfügbar", e);
       return false;
     }
   }
 
-  _applyEq(fromGesture = false) {
+  _applyEq() {
     const enabled = !!setting("eq_enabled");
     if (!this.ctx) {
-      if (!enabled) return;
-      // Browser erlauben Web Audio erst nach einer Nutzeraktion -> sonst beim ersten Abspielen
-      if (!fromGesture && navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
-      if (!this._ensureGraph()) return;
+      // Equalizer am Handy eingeschaltet: Klangkette jetzt aufbauen (sonst beim ersten Abspielen)
+      if (!enabled || !this._mayStartAudio() || !this._ensureGraph()) return;
+      this.ctx.resume?.().catch(() => {});
     }
     const gains = EQ_BANDS.map(([, , key]) => (enabled ? Number(setting(key)) || 0 : 0));
     const now = this.ctx.currentTime;
     this.eqFilters.forEach((f, i) => f.gain.setTargetAtTime(gains[i], now, 0.03));
     // Anhebungen nicht übersteuern lassen: halb vorab absenken, den Rest fängt der Limiter
-    const boost = Math.max(0, ...gains);
-    this.eqPre.gain.setTargetAtTime(Math.pow(10, -(boost / 2) / 20), now, 0.03);
-    this.limiter.threshold.setTargetAtTime(boost > 0 ? -1.5 : 0, now, 0.03);
-    this.limiter.ratio.setTargetAtTime(boost > 0 ? 20 : 1, now, 0.03);
+    this._eqBoost = Math.max(0, ...gains);
+    this.eqPre.gain.setTargetAtTime(dbToGain(-this._eqBoost / 2), now, 0.03);
     this._applyVolume();
   }
 
   _onSettings(keys) {
     if (keys.some((k) => k.startsWith("eq_"))) this._applyEq();
     if (keys.some((k) => k.startsWith("normalize"))) this._applyVolume();
+    if (keys.includes("gapless") || keys.includes("crossfade")) this._cancelTransition();
     if (keys.includes("playback_rate")) {
       for (const d of this.decks) d.defaultPlaybackRate = d.playbackRate = this._rate();
     }
@@ -653,7 +836,8 @@ class Player {
       } catch { /* ignorieren */ }
     }
     if (!track || !t.duration || !isFinite(t.duration)) return;
-    const remaining = t.duration - t.current;
+    const endAt = this._endAt(track, t.duration);  // ohne die Stille am Ende
+    const remaining = endAt - t.current;
     // Autoplay: kurz vor Ende der Warteschlange ähnliche Songs anhängen (damit Überblenden klappt)
     if (setting("autoplay") && this.repeat === "off" && this.index === this.items.length - 1
         && remaining < 30 && this._autoplayFor !== track._uid) {
@@ -661,11 +845,54 @@ class Player {
       this._appendAutoplay();
     }
     this._maybePreload(remaining);
+    if (this.fade || this.pausing || this.repeat === "one" || this.audio.paused || !this._peekNext()) return;
     const cf = Number(setting("crossfade") || 0);
-    if (cf > 0 && !this.fade && !this.pausing && this.repeat !== "one" && !this.audio.paused
-        && t.duration > cf * 2 + 2 && remaining <= cf && remaining > 0.3 && this._peekNext()) {
-      this._crossfade(cf);
+    if (cf > 0) {
+      // Überblenden über echte Musik, nicht über die Stille am Ende
+      if (endAt > cf * 2 + 2 && remaining <= cf && remaining > 0.3) this._crossfade(cf);
+      return;
     }
+    if (setting("gapless")) this._scheduleTransition(track, remaining);
+  }
+
+  // ------------------------------------------------------------ intern: Übergänge ohne Pause
+  /** Stille kürzen – nicht bei Alben in Original-Reihenfolge (dort gehören die Pausen zum Album). */
+  _trimSilence() {
+    if (!setting("gapless") && !(Number(setting("crossfade")) > 0)) return false;
+    return this.context?.type !== "album" || this.shuffle;
+  }
+
+  _startOffset(track) {
+    const lead = Number(track?.lead_in) || 0;
+    return this._trimSilence() && lead >= TRIM_MIN ? Math.max(0, lead - TRIM_KEEP) : null;
+  }
+
+  _endAt(track, duration) {
+    const tail = Number(track?.tail) || 0;
+    if (!this._trimSilence() || tail < TRIM_MIN || duration < tail + 10) return duration;
+    return duration - tail + TRIM_KEEP;
+  }
+
+  /** Lückenlos: kurz vor dem Ende den vorgeladenen Song starten und minimal überlappen lassen. */
+  _scheduleTransition(track, remaining) {
+    const pre = this.preloaded;
+    const next = this._peekNext();
+    if (!pre || !next || pre.uid !== next._uid || pre.deck.readyState < 3) return;
+    if (remaining > 1.5 || remaining < 0 || this._transitionFor === track._uid) return;
+    this._transitionFor = track._uid;
+    const rate = this.audio.playbackRate || 1;
+    clearTimeout(this._transitionTimer);
+    this._transitionTimer = setTimeout(() => {
+      // Timer kam zu spät (Browser drosselt im Hintergrund)? Dann hat „ended“ schon weitergeschaltet.
+      if (this.current?._uid !== track._uid || this.fade || this.pausing || this.audio.paused) return;
+      this._crossfade(GAPLESS_OVERLAP);
+    }, Math.max(0, (remaining - GAPLESS_OVERLAP) / rate) * 1000);
+  }
+
+  _cancelTransition() {
+    clearTimeout(this._transitionTimer);
+    this._transitionTimer = null;
+    this._transitionFor = null;
   }
 
   _state() {

@@ -75,6 +75,19 @@ in deine Bibliothek.
   „Remix“ oder „Live“ schon). Vorhandene Songs werden nicht nochmal geladen. Liegt ein Song doch doppelt
   im Speicherort, zeigt die Bibliothek nur die beste Version; die Kopien stehen unter *Einstellungen →
   Bibliothek & Scan* und lassen sich dort löschen. Nur in Playlists darf ein Song mehrfach vorkommen.
+- **Klang wie bei Spotify – oder besser**:
+  - **Lautstärke angleichen**: Alle Songs klingen gleich laut (ReplayGain aus den Dateien oder vom Server
+    gemessen). Ganze Alben behalten ihre Dynamik, sonst wird jeder Song einzeln angeglichen. Am PC werden auch zu
+    leise Songs angehoben – nur so weit, dass die echten Spitzen unter -1 dBTP bleiben; bei „Laut“ mit Limiter.
+  - **Keine Pausen voller Stille**: Der Server misst Stille am Anfang und Ende jedes Songs. In Playlists und Mixen
+    springt Homify darüber hinweg, und der nächste Song startet nahtlos mit einer winzigen Überlappung.
+    Ganze Alben bleiben, wie sie sind.
+  - **Weiche Übergänge**: Überblenden gleich laut (keine Delle in der Mitte). Pausieren, Spulen und
+    Weiterschalten blenden kurz aus, statt hart abzuschneiden – nichts knackt. Am PC läuft das auf dem Audio-Takt,
+    also auch in einem Hintergrund-Tab exakt.
+  - **Lautstärke-Regler nach Gehör** (50 % klingt nach halb so laut, nicht fast gleich laut).
+  - **Kein unnötiges Umwandeln**: Opus/AAC-Songs werden für „Niedrig“ nicht nochmal verlustbehaftet umgewandelt.
+    Muss umgewandelt werden, nimmt Homify bei niedrigen Bitraten Opus, wenn das Gerät es kann.
 - **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, Autoplay, Songtexte (mitlaufend), Überblenden,
   Equalizer, Lautstärke angleichen, Sperrbildschirm-/Kopfhörer-Steuerung, Datensparmodus für
   unterwegs, tägliche Sicherung.
@@ -89,7 +102,7 @@ Gruppe. Geänderte Werte sind markiert und lassen sich mit ↺ auf den Standard 
 
 | Gruppe | Was du einstellen kannst |
 |---|---|
-| Wiedergabe (15) | Qualität im WLAN und bei mobilen Daten, Überblenden (0–12 s), lückenlose Wiedergabe, Autoplay, Lautstärke angleichen (pro Song/Album, leise/normal/laut), sanft pausieren, Geschwindigkeit, letzte Warteschlange wiederherstellen, „Zurück“-Verhalten, Sprungweite, ab wann ein Song als gehört zählt, private Sitzung, intelligenter Zufall |
+| Wiedergabe (15) | Qualität im WLAN und bei mobilen Daten, Überblenden (0–12 s), lückenlose Wiedergabe, Autoplay, Lautstärke angleichen (pro Song oder automatisch wie Spotify, leise/normal/laut), sanft pausieren, Geschwindigkeit, letzte Warteschlange wiederherstellen, „Zurück“-Verhalten, Sprungweite, ab wann ein Song als gehört zählt, private Sitzung, intelligenter Zufall |
 | Equalizer (8) | Ein/Aus, 21 Presets wie bei Spotify (Bass-Booster, Dance, Deep, Hip-Hop, R&B, Rock, Kleine Lautsprecher, Stimmen-Booster …) als Knöpfe, 6 Regler auf denselben Frequenzen wie Spotify (60 Hz bis 15 kHz), Limiter gegen Übersteuern |
 | Aussehen (15) | Design (Dunkel, Schwarz/AMOLED, Gedämpft), 8 Akzentfarben, Farben aus dem Cover, Größe der Oberfläche (85–140 %), Kachelgröße, kompakte Listen, Cover/Album-Spalte in Listen, Animationen, Startseite beim Öffnen, Abspielen mit einem Klick, Restzeit, Nachfragen vor dem Löschen, Tastenkürzel, Songtext-Knopf |
 | Startseite (9) | Jede Reihe einzeln ein-/ausblenden (auch „Für dich gemacht“, Top-Genres, „Weil du … gehört hast“), Einträge pro Reihe |
@@ -99,7 +112,7 @@ Gruppe. Geänderte Werte sind markiert und lassen sich mit ↺ auf den Standard 
 
 | Gruppe | Was du einstellen kannst |
 |---|---|
-| Bibliothek & Scan (12) | Scan-Intervall, Scan beim Start, gleichzeitig gelesene Dateien (Last fürs NAS), kurze Dateien und Ordner ignorieren, Ordnername als Album, Künstler/Titel aus dem Dateinamen, „feat.“-Gäste, Trennzeichen, `cover.jpg` bevorzugen, Sicherheitsgrenze gegen versehentliches Löschen (z. B. wenn das NAS kurz weg ist), Lautheit messen |
+| Bibliothek & Scan (12) | Scan-Intervall, Scan beim Start, gleichzeitig gelesene Dateien (Last fürs NAS), kurze Dateien und Ordner ignorieren, Ordnername als Album, Künstler/Titel aus dem Dateinamen, „feat.“-Gäste, Trennzeichen, `cover.jpg` bevorzugen, Sicherheitsgrenze gegen versehentliches Löschen (z. B. wenn das NAS kurz weg ist), Klang analysieren (Lautheit, Spitzen, Stille) |
 | Streaming (6) | Format beim Umwandeln (MP3/AAC/Opus), Bitraten, Cache-Größe, gleichzeitige Umwandlungen, Download aufs Gerät erlauben |
 | Downloads (spotDL) (19) | Format, Bitrate, Threads, Dateinamen-Vorlage, Songtexte mitladen, SponsorBlock, Audio-Quellen, Explicit überspringen, Dateinamen vereinfachen, automatische Wiederholung, Tageslimit pro Benutzer, Recht für neue Benutzer, wöchentliches spotDL-Update, Aufräumen, Cookies, eigene Spotify-API |
 | Server & Sicherheit (9) | Name des Servers, Erreichbarkeit (Netzwerk oder nur dieser Rechner), Port, Anmeldedauer, Verlauf aufbewahren, tägliche Sicherung + Anzahl, Protokoll, eigener ffmpeg-Pfad |

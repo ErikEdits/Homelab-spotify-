@@ -60,13 +60,17 @@ SETTINGS: list[Setting] = [
     _s("crossfade", "user", "Wiedergabe", "int", 0, "Überblenden",
        "Songs gehen fließend ineinander über. 0 = aus.", min=0, max=12, step=1, unit="s"),
     _s("gapless", "user", "Wiedergabe", "bool", True, "Nächsten Song vorladen",
-       "Der nächste Song startet ohne Pause (lückenlose Wiedergabe)."),
+       "Der nächste Song startet ohne Pause (lückenlose Wiedergabe). In Playlists und Mixen wird lange Stille "
+       "am Anfang und Ende eines Songs übersprungen – ganze Alben bleiben unverändert."),
     _s("autoplay", "user", "Wiedergabe", "bool", True, "Autoplay",
        "Wenn die Warteschlange zu Ende ist, laufen ähnliche Songs aus deiner Bibliothek weiter."),
-    _s("normalize", "user", "Wiedergabe", "select", "track", "Lautstärke angleichen",
-       "Nutzt ReplayGain-Werte aus den Dateien (oder vom Server gemessene Lautheit).",
-       options=[("off", "Aus"), ("track", "Pro Song"), ("album", "Pro Album")]),
+    _s("normalize", "user", "Wiedergabe", "select", "album", "Lautstärke angleichen",
+       "Alle Songs gleich laut – mit ReplayGain aus den Dateien oder vom Server gemessen. „Automatisch“ macht es "
+       "wie Spotify: ganze Alben behalten ihre Dynamik, sonst wird jeder Song einzeln angeglichen.",
+       options=[("off", "Aus"), ("track", "Pro Song"), ("album", "Automatisch (Alben am Stück)")]),
     _s("normalize_level", "user", "Wiedergabe", "select", "normal", "Lautstärke-Niveau beim Angleichen",
+       "Am PC werden leise Songs auch angehoben – bei „Normal“ nur so weit, dass nichts übersteuert, "
+       "bei „Laut“ mit Limiter (wie bei Spotify).",
        options=[("quiet", "Leise"), ("normal", "Normal"), ("loud", "Laut")]),
     _s("fade_pause", "user", "Wiedergabe", "bool", True, "Sanft pausieren",
        "Beim Pausieren und Fortsetzen kurz aus- bzw. einblenden."),
@@ -171,12 +175,14 @@ SETTINGS: list[Setting] = [
     _s("max_remove_percent", "server", "Bibliothek & Scan", "int", 30, "Sicherheitsgrenze beim Aufräumen",
        "Würde ein Scan mehr als diesen Anteil der Bibliothek löschen (z. B. NAS kurz weg), wird nichts gelöscht. "
        "„Alles neu einlesen“ umgeht die Grenze.", min=5, max=100, step=5, unit="%"),
-    _s("loudness_analysis", "server", "Bibliothek & Scan", "bool", True, "Lautheit messen",
-       "Misst im Hintergrund die Lautheit von Songs ohne ReplayGain – für „Lautstärke angleichen“."),
+    _s("loudness_analysis", "server", "Bibliothek & Scan", "bool", True, "Klang analysieren",
+       "Misst im Hintergrund Lautheit, echte Spitzen und Stille am Anfang/Ende jedes Songs – für „Lautstärke "
+       "angleichen“ (auch Anheben leiser Songs) und Übergänge ohne Pause. Einmal pro Song, schont den Server."),
 
     # ================================================================ Streaming (Server)
     _s("transcode_format", "server", "Streaming", "select", "mp3", "Format beim Umwandeln",
-       "MP3 läuft auf allen Geräten. AAC/Opus klingen bei gleicher Bitrate etwas besser.",
+       "MP3 läuft auf allen Geräten. Bei niedrigen Bitraten (mobile Daten) nimmt Homify automatisch Opus, "
+       "wenn das Gerät es kann – klingt dort deutlich besser.",
        options=[("mp3", "MP3"), ("aac", "AAC (m4a)"), ("opus", "Opus")]),
     _s("transcode_high_kbps", "server", "Streaming", "select", "320", "Bitrate für „Hoch“",
        options=[("192", "192 kbit/s"), ("256", "256 kbit/s"), ("320", "320 kbit/s")]),

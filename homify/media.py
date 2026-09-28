@@ -104,15 +104,29 @@ def quality_kbps(quality: str) -> int:
     return 192  # normal
 
 
-def needs_transcode_for_quality(bitrate: int, quality: str) -> bool:
+# Moderne Codecs: nochmal verlustbehaftet umwandeln kostet mehr Klang, als die paar gesparten kbit/s wert sind
+EFFICIENT_CODECS = {"opus", "webm", "aac", "vorbis"}
+LOW_BITRATE_KBPS = 192  # bis hier klingt Opus deutlich besser als MP3/AAC
+
+
+def needs_transcode_for_quality(bitrate: int, quality: str, codec: str = "") -> bool:
     """Muss für diese Qualitätsstufe umgewandelt werden? (Quelle deutlich größer als das Ziel)"""
     if quality not in QUALITIES:
         return False
-    return (bitrate or 10**9) > quality_kbps(quality) * 1000 * 1.15
+    tolerance = 1.35 if (codec or "").lower() in EFFICIENT_CODECS else 1.15
+    return (bitrate or 10**9) > quality_kbps(quality) * 1000 * tolerance
 
 
-def output_format() -> tuple[list[str], str, str, str]:
-    return FORMATS.get(config.get("transcode_format") or "mp3", FORMATS["mp3"])
+def choose_format(quality: str, client_opus: bool = False) -> str:
+    """Zielformat: das eingestellte – bei niedrigen Bitraten Opus, wenn das Gerät es abspielen kann."""
+    fmt = config.get("transcode_format") or "mp3"
+    if client_opus and quality_kbps(quality) <= LOW_BITRATE_KBPS:
+        return "opus"
+    return fmt if fmt in FORMATS else "mp3"
+
+
+def output_format(fmt: str | None = None) -> tuple[list[str], str, str, str]:
+    return FORMATS.get(fmt or config.get("transcode_format") or "mp3", FORMATS["mp3"])
 
 
 _sem: threading.BoundedSemaphore | None = None
@@ -134,10 +148,12 @@ class TranscodeError(RuntimeError):
     pass
 
 
-def transcode(track: dict, quality: str = "high", source: Callable[[], str] | None = None) -> tuple[Path, str]:
+def transcode(track: dict, quality: str = "high", source: Callable[[], str] | None = None,
+              fmt: str | None = None) -> tuple[Path, str]:
     """
     Wandelt einen Song um (Format und Bitrate aus den Einstellungen, Ergebnis wird zwischengespeichert).
     source: liefert den lokalen Pfad der Quelldatei (bei NAS-Dateien eine temporäre Kopie).
+    fmt: Zielformat (Standard: Einstellung „Format beim Umwandeln“)
     Rückgabe: (Datei, MIME-Typ)
     """
     if quality not in QUALITIES:
@@ -145,8 +161,8 @@ def transcode(track: dict, quality: str = "high", source: Callable[[], str] | No
     ff = find_ffmpeg()
     if not ff:
         raise TranscodeError("ffmpeg wurde nicht gefunden")
-    fmt = config.get("transcode_format") or "mp3"
-    args, container, ext, mime = output_format()
+    fmt = fmt if fmt in FORMATS else (config.get("transcode_format") or "mp3")
+    args, container, ext, mime = output_format(fmt)
     kbps = quality_kbps(quality)
     key = f"{track['id']}_{fmt}{kbps}_{int(track.get('mtime') or 0)}"
     out = TRANSCODE_DIR / key[:2] / f"{key}.{ext}"

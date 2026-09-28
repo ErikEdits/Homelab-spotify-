@@ -42,7 +42,19 @@ CREATE TABLE IF NOT EXISTS tracks (
     sig          TEXT NOT NULL DEFAULT '',
     dkey         TEXT NOT NULL DEFAULT '',
     search       TEXT NOT NULL DEFAULT '',
-    added_at     REAL NOT NULL DEFAULT 0
+    added_at     REAL NOT NULL DEFAULT 0,
+    lufs         REAL,                       -- gemessene Lautheit (LUFS)
+    peak         REAL,                       -- gemessene echte Spitze (dBTP)
+    lead_in      REAL,                       -- Stille am Anfang (s)
+    tail         REAL,                       -- Stille am Ende (s)
+    analyzed     INTEGER NOT NULL DEFAULT 0  -- Version der Klang-Analyse (loudness.ANALYSIS_VERSION)
+);
+
+-- Pegel ganzer Alben aus den Einzelmessungen (für „Pro Album“ ohne ReplayGain-Tags)
+CREATE TABLE IF NOT EXISTS album_loudness (
+    album_id TEXT PRIMARY KEY,
+    gain     REAL NOT NULL,
+    peak     REAL
 );
 
 -- Doppelte Dateien desselben Songs: nicht in der Bibliothek, nur hier vermerkt (Datei bleibt liegen)
@@ -239,7 +251,8 @@ def init() -> None:
     # Spätere Spalten in bestehenden Datenbanken nachrüsten
     added = {
         "tracks": [("rel", "TEXT NOT NULL DEFAULT ''"), ("gain", "REAL"), ("album_gain", "REAL"),
-                   ("dkey", "TEXT NOT NULL DEFAULT ''")],
+                   ("dkey", "TEXT NOT NULL DEFAULT ''"), ("lufs", "REAL"), ("peak", "REAL"), ("lead_in", "REAL"),
+                   ("tail", "REAL"), ("analyzed", "INTEGER NOT NULL DEFAULT 0")],
         "playlists": [("public", "INTEGER NOT NULL DEFAULT 0"), ("published_at", "REAL"),
                       ("source_url", "TEXT NOT NULL DEFAULT ''"), ("source_ids", "TEXT NOT NULL DEFAULT '[]'")],
         "downloads": [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("auto_liked", "INTEGER NOT NULL DEFAULT 0"),

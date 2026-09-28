@@ -359,13 +359,14 @@ def _serve(request: Request, st, rel: str, media_type: str, headers: dict[str, s
 
 
 @app.get("/api/tracks/{track_id}/stream")
-def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "original",
+def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "original", opus: int = 0,
            user: dict = Depends(auth.current_user)):
     t = _track_or_404(track_id)
     st, rel = _source(t)
     headers = {"Cache-Control": "private, max-age=86400"}
     wanted = quality if quality in media.QUALITIES else "high"
-    if transcode or (quality in media.QUALITIES and media.needs_transcode_for_quality(t["bitrate"], quality)):
+    if transcode or (quality in media.QUALITIES
+                     and media.needs_transcode_for_quality(t["bitrate"], quality, t["codec"])):
         local = st.local_path(rel)
         temp: list[str] = []
 
@@ -376,7 +377,7 @@ def stream(track_id: str, request: Request, transcode: int = 0, quality: str = "
             return temp[0]
 
         try:
-            out, mime = media.transcode(t, wanted, source=source)
+            out, mime = media.transcode(t, wanted, source=source, fmt=media.choose_format(wanted, bool(opus)))
         except media.TranscodeError as exc:
             raise HTTPException(500, f"Umwandlung fehlgeschlagen: {exc}") from exc
         except OSError as exc:
