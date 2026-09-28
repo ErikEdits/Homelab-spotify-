@@ -253,6 +253,7 @@ Tastenkürzel lassen sich unter *Einstellungen → Aussehen* abschalten.
 | NAS: „nicht erreichbar“ | IP-Adresse prüfen, SMB in UGOS aktiviert? Server und NAS im selben Netz? |
 | Handy erreicht den Server nicht | Zuhause: gleiches WLAN, Firewall (ufw/Windows) offen? Unterwegs: Tailscale-App an? |
 | Downloads schlagen fehl | *Einstellungen → Downloads → spotDL aktualisieren*; das Protokoll des Downloads zeigt den Grund. |
+| „JSONDecodeError: Expecting value …“ | YouTube Music hat statt Daten eine Sperrseite geschickt (meist vorübergehend, nach vielen Downloads am Stück). Homify sucht dann automatisch über die normale YouTube-Suche weiter (mit deinen YouTube-Cookies) – einfach den Download mit ↻ neu starten. Nennt die Meldung Spotify, eigene Spotify-API-Daten eintragen. |
 | Windows-App warnt beim Installieren | Die App ist nicht signiert: *Weitere Informationen → Trotzdem ausführen*. |
 | Android: „App nicht installiert“ | Alte Version zuerst deinstallieren (passiert nur, wenn der Signaturschlüssel gewechselt wurde). |
 | Passwort vergessen | `.venv/bin/python -m homify reset-password NAME` (Windows: `.venv\Scripts\python …`) |
