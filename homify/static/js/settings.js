@@ -151,7 +151,9 @@ export async function settingsView() {
           const patch = { eq_preset: v ?? "flat" };
           const values = eqPresets()[patch.eq_preset];
           if (values) EQ_BANDS.forEach(([k], i) => { patch[k] = values[i]; });
+          if (values && patch.eq_preset !== "flat") patch.eq_enabled = true;  // Preset wählen = Equalizer an
           const saved = await saveSettings(patch);
+          userRows.eq_enabled?._set(saved.eq_enabled);
           eq?.sync();
           return saved.eq_preset;
         };
@@ -260,17 +262,36 @@ function eqWidget(rows) {
       try {
         await saveSettings({ [key]: Number(r.value), eq_preset: "custom" });
         rows.eq_preset?._set("custom");
+        sync();
       } catch (e) { toast(e.message, { error: true }); }
     });
     show();
     sliders[key] = { r, show };
     bands.append(h("div", { class: "eq-band" }, out, r, h("div", { class: "eq-label" }, label)));
   }
-  const el = h("div", { class: "set-row eq-row", dataset: { search: "equalizer eq bass höhen mitten 60 150 400 1k 2,4k 15k hz klang" } },
-    h("div", { class: "eq-box" }, h("div", { class: "eq-scale" }, h("span", {}, "+12 dB"), h("span", {}, "0"), h("span", {}, "−12 dB")), bands));
+  // Presets als Knöpfe (wie bei Spotify): ein Klick stellt alle 6 Regler und schaltet den Equalizer ein
+  const presetOptions = (settingsSchema()?.settings.find((x) => x.key === "eq_preset")?.options || []).filter((o) => o.value !== "custom");
+  const chips = h("div", { class: "eq-presets" }, presetOptions.map((o) => h("button", {
+    type: "button", class: "gen-chip", dataset: { preset: o.value }, onclick: async () => {
+      const values = eqPresets()[o.value];
+      const patch = { eq_preset: o.value };
+      if (values) EQ_BANDS.forEach(([k], i) => { patch[k] = values[i]; });
+      if (o.value !== "flat") patch.eq_enabled = true;
+      try {
+        await saveSettings(patch);
+        rows.eq_preset?._set(o.value);
+        rows.eq_enabled?._set(setting("eq_enabled"));
+        sync();
+      } catch (e) { toast(e.message, { error: true }); }
+    } }, o.label.replace(/ \(.*\)$/, ""))));
+  const el = h("div", { class: "set-row eq-row", dataset: { search: "equalizer eq bass höhen mitten 60 150 400 1k 2,4k 15k hz klang preset voreinstellung rock pop hip-hop jazz dance" } },
+    h("div", { class: "eq-wrap" }, chips,
+      h("div", { class: "eq-box" }, h("div", { class: "eq-scale" }, h("span", {}, "+12 dB"), h("span", {}, "0"), h("span", {}, "−12 dB")), bands)));
   const sync = () => {
     for (const [key] of EQ_BANDS) { sliders[key].r.value = setting(key); sliders[key].show(); }
     el.classList.toggle("off", !setting("eq_enabled"));
+    const active = setting("eq_enabled") ? setting("eq_preset") : "flat";
+    chips.querySelectorAll(".gen-chip").forEach((c) => c.classList.toggle("active", c.dataset.preset === active));
   };
   sync();
   rows.eq_enabled?.addEventListener("change", () => setTimeout(sync, 0));

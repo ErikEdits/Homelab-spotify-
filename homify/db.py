@@ -170,6 +170,14 @@ CREATE TABLE IF NOT EXISTS plays (
 CREATE INDEX IF NOT EXISTS idx_plays_user ON plays(user_id, played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_track ON plays(track_id);
 
+-- Früh übersprungene Songs: negatives Signal für den persönlichen Feed
+CREATE TABLE IF NOT EXISTS skips (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    track_id   TEXT NOT NULL,
+    skipped_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skips_user ON skips(user_id, skipped_at);
+
 CREATE TABLE IF NOT EXISTS user_settings (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     key     TEXT NOT NULL,

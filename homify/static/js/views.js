@@ -117,8 +117,12 @@ export async function homeView() {
     { id: "random:", name: "Zufallsmix", subtitle: "Quer durch deine Bibliothek", covers: data.discover.map((a) => a.cover).filter(Boolean).slice(0, 4) },
     ...data.mixes,
   ];
+  const feed = data.feed || {};
   root.append(
+    show("home_mixes") ? shelf(`Für dich gemacht${state.user?.username ? `, ${state.user.username}` : ""}`, (feed.made_for_you || []).map(mixCard)) : null,
     show("home_recent") ? shelf("Zuletzt gehört", data.recent_albums.map((a) => albumCard(a))) : null,
+    show("home_discover") && feed.because ? shelf(feed.because.title, feed.because.albums.map((a) => albumCard(a))) : null,
+    show("home_mixes") ? shelf("Deine Top-Genres", (feed.top_genres || []).map(mixCard)) : null,
     show("home_mixes") ? shelf("Deine Mixe", mixes.map(mixCard)) : null,
     show("home_new") ? shelf("Neu in deiner Bibliothek", data.new_albums.map((a) => albumCard(a)), { href: "#/library?tab=albums&sort=added" }) : null,
   );
@@ -470,23 +474,33 @@ export async function likedView() {
 // ---------------------------------------------------------------- Mixe & Radio
 export async function mixView({ kind, value }) {
   value = decodeURIComponent(value || "");
-  const tracks = await api(`/mix/${encodeURIComponent(kind)}?value=${encodeURIComponent(value)}&limit=${Number(setting("mix_size") || 60)}`);
-  let title = "Zufallsmix", type = "Mix";
-  if (kind === "genre") title = `${value} Mix`;
-  if (kind === "radio") { title = tracks[0] ? `${tracks[0].title} Radio` : "Song-Radio"; type = "Radio"; }
+  const data = await api(`/mix/${encodeURIComponent(kind)}/detail?value=${encodeURIComponent(value)}&limit=${Number(setting("mix_size") || 60)}`);
+  const { tracks, name: title } = data;
+  const type = kind === "radio" ? "Radio" : data.feed ? "Für dich gemacht" : "Mix";
   const id = `${kind}:${value}`;
   const context = { type: "mix", id, name: title, href: location.hash };
   const playBtn = contextPlayButton(id, () => player.playTracks(tracks, 0, context));
   const covers = [...new Set(tracks.map((t) => t.cover).filter(Boolean))];
+  const saveAsPlaylist = async () => {
+    const name = await prompt("Als Playlist speichern", { label: "Name", value: title, okLabel: "Speichern" });
+    if (!name) return;
+    try {
+      await api("/playlists", { method: "POST", body: { name, description: data.subtitle || "", track_ids: tracks.map((t) => t.id) } });
+      await loadPlaylists();
+      toast(`„${name}“ ist jetzt in deiner Bibliothek`);
+    } catch (e) { toast(e.message, { error: true }); }
+  };
   const root = inner(
     hero({
       coverEl: mosaic(covers, { size: 640, cls: "hero-cover" }), type, title,
-      desc: kind === "radio" ? "Ähnliche Songs aus deiner Bibliothek (gleicher Künstler, Genre und Ära)." : null,
+      desc: data.subtitle || null,
       meta: [plural(tracks.length, "Song", "Songs")],
     }),
     h("div", { class: "actionbar" }, playBtn,
-      h("button", { class: "btn btn-outline btn-small", onclick: () => navigate(location.hash) }, icon("refresh", "sm"), "Neu mischen")),
-    tracks.length ? trackList(tracks, { context }) : emptyState("note", "Keine Songs gefunden", ""),
+      data.feed ? null : h("button", { class: "btn btn-outline btn-small", onclick: () => navigate(location.hash) }, icon("refresh", "sm"), "Neu mischen"),
+      tracks.length ? h("button", { class: "btn btn-outline btn-small", onclick: saveAsPlaylist }, icon("plus", "sm"), "Als Playlist speichern") : null),
+    tracks.length ? trackList(tracks, { context })
+      : emptyState("note", "Noch nichts da", data.feed ? "Hör ein paar Songs – dieser Mix wird aus deinem Hörverhalten gebaut." : ""),
   );
   return { el: root, color: "#1e3264", destroy: () => playBtn._cleanup() };
 }

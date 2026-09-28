@@ -26,7 +26,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, playlist_import, remote, user_prefs
+from . import (APP_NAME, __version__, auth, backup, cookies, db, dedup, library, media, playlist_import, recommend, remote,
+               user_prefs)
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
@@ -95,6 +96,7 @@ class Scheduler:
         days = int(config.get("history_days") or 0)
         if days:
             db.execute("DELETE FROM plays WHERE played_at < ?", (time.time() - days * 86400,))
+        db.execute("DELETE FROM skips WHERE skipped_at < ?", (time.time() - 365 * 86400,))
         analyzer.kick()
         if config.get("spotdl_auto_update") and tools.installed() and not downloads.active_count():
             stamp = DATA_DIR / "tools" / "last-update"
@@ -118,6 +120,7 @@ async def lifespan(app: FastAPI):
     db.init()
     apply_runtime_settings()
     scanner.listeners.append(invalidate_library_index)
+    scanner.listeners.append(recommend.invalidate)
     scanner.listeners.append(lambda _st: playlist_import.sync_jobs())  # geholte Songs in importierte Playlists
     scanner.listeners.append(lambda _status: analyzer.kick())
     downloads.start()
@@ -261,9 +264,26 @@ def change_password(body: PasswordChange, request: Request, response: Response,
 
 @app.get("/api/home")
 def home(limit: int = 12, user: dict = Depends(auth.current_user)):
-    data = library.home(user["id"], min(max(limit, 4), 30))
+    limit = min(max(limit, 4), 30)
+    data = library.home(user["id"], limit)
     data["scan"] = scanner.status
+    data["feed"] = _feed(user["id"], limit)
     return data
+
+
+def _feed(user_id: int, limit: int) -> dict[str, Any]:
+    """Persönliche Empfehlungen für die Startseite (Daily Mixes, Mix der Woche, …)."""
+    try:
+        because = recommend.because_you_listened(user_id, limit)
+        return {
+            "made_for_you": recommend.made_for_you(user_id),
+            "because": {"title": because["title"], "albums": library.album_json(library.albums_by_ids(because["album_ids"]))}
+            if because else None,
+            "top_genres": library.mixes_for(recommend.top_genres(user_id, limit)),
+        }
+    except Exception:  # der Feed darf die Startseite nie kaputt machen
+        log.exception("Feed konnte nicht berechnet werden")
+        return {"made_for_you": [], "because": None, "top_genres": []}
 
 
 @app.get("/api/search")
@@ -454,9 +474,36 @@ def artist_tracks(artist_id: str, user: dict = Depends(auth.current_user)):
     return library.artist_all_tracks(artist_id, user["id"])
 
 
+MIX_TITLES = {"random": ("Zufallsmix", "Quer durch deine Bibliothek")}
+
+
+def _mix(kind: str, value: str, user_id: int, limit: int) -> dict[str, Any]:
+    limit = min(max(limit, 5), 300)
+    if kind in recommend.FEED_KINDS:
+        ids, name, subtitle = recommend.mix(kind, value, user_id, limit)
+        return {"name": name, "subtitle": subtitle, "tracks": library.tracks_json(library.get_track_rows(ids), user_id)}
+    if kind not in ("genre", "radio", "random"):
+        raise HTTPException(404, "Diesen Mix gibt es nicht")
+    tracks = library.mix_tracks(kind, value, user_id, limit)
+    if kind == "genre":
+        name, subtitle = f"{value} Mix", f"Das Beste aus {value} in deiner Bibliothek"
+    elif kind == "radio":
+        name = f"{tracks[0]['title']} Radio" if tracks else "Song-Radio"
+        subtitle = "Ähnliche Songs aus deiner Bibliothek (gleicher Künstler, Genre und Ära)"
+    else:
+        name, subtitle = MIX_TITLES["random"]
+    return {"name": name, "subtitle": subtitle, "tracks": tracks}
+
+
 @app.get("/api/mix/{kind}")
 def mix(kind: str, value: str = "", limit: int = 60, user: dict = Depends(auth.current_user)):
-    return library.mix_tracks(kind, value, user["id"], min(max(limit, 5), 300))
+    return _mix(kind, value, user["id"], limit)["tracks"]
+
+
+@app.get("/api/mix/{kind}/detail")
+def mix_detail(kind: str, value: str = "", limit: int = 60, user: dict = Depends(auth.current_user)):
+    data = _mix(kind, value, user["id"], limit)
+    return {"kind": kind, "value": value, "feed": kind in recommend.FEED_KINDS, **data}
 
 
 # --------------------------------------------------------------------------- #
@@ -491,6 +538,14 @@ def add_history(body: PlayEvent, user: dict = Depends(auth.current_user)):
     _track_or_404(body.track_id)
     db.execute("INSERT INTO plays (user_id, track_id, played_at) VALUES (?, ?, ?)",
                (user["id"], body.track_id, time.time()))
+    return {"ok": True}
+
+
+@app.post("/api/history/skip")
+def add_skip(body: PlayEvent, user: dict = Depends(auth.current_user)):
+    """Früh übersprungen: der Feed schlägt diesen Song seltener vor."""
+    _track_or_404(body.track_id)
+    recommend.record_skip(user["id"], body.track_id)
     return {"ok": True}
 
 

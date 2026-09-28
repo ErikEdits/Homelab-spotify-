@@ -195,6 +195,7 @@ class Player {
 
   next(auto = false) {
     if (!this.items.length) return;
+    if (!auto) this._reportSkip();
     this._finishCrossfade();
     if (this.index < this.items.length - 1) {
       this.index++;
@@ -513,7 +514,15 @@ class Player {
       });
       let node = pre;
       for (const f of filters) { node.connect(f); node = f; }
-      node.connect(ctx.destination);
+      // Limiter am Ende: fängt Spitzen ab, wenn der Equalizer anhebt – so bleibt es laut, ohne zu verzerren
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = 0;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 1;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.12;
+      node.connect(limiter);
+      limiter.connect(ctx.destination);
       for (const d of this.decks) {
         const gain = ctx.createGain();
         ctx.createMediaElementSource(d).connect(gain);
@@ -523,6 +532,7 @@ class Player {
       this.ctx = ctx;
       this.eqPre = pre;
       this.eqFilters = filters;
+      this.limiter = limiter;
       return true;
     } catch (e) {
       console.warn("Equalizer nicht verfügbar", e);
@@ -541,9 +551,11 @@ class Player {
     const gains = EQ_BANDS.map(([, , key]) => (enabled ? Number(setting(key)) || 0 : 0));
     const now = this.ctx.currentTime;
     this.eqFilters.forEach((f, i) => f.gain.setTargetAtTime(gains[i], now, 0.03));
-    // Anhebungen nicht übersteuern lassen: Vorverstärkung um die größte Anhebung absenken
+    // Anhebungen nicht übersteuern lassen: halb vorab absenken, den Rest fängt der Limiter
     const boost = Math.max(0, ...gains);
-    this.eqPre.gain.setTargetAtTime(Math.pow(10, -boost / 20), now, 0.03);
+    this.eqPre.gain.setTargetAtTime(Math.pow(10, -(boost / 2) / 20), now, 0.03);
+    this.limiter.threshold.setTargetAtTime(boost > 0 ? -1.5 : 0, now, 0.03);
+    this.limiter.ratio.setTargetAtTime(boost > 0 ? 20 : 1, now, 0.03);
     this._applyVolume();
   }
 
@@ -616,6 +628,14 @@ class Player {
       }
     })();
     return this._autoplayPending;
+  }
+
+  /** Früh weitergeschaltet (bevor der Song als gehört zählt): der Feed schlägt ihn dann seltener vor. */
+  _reportSkip() {
+    const track = this.current;
+    const at = this.time().current;
+    if (!track || this.reported || at < 1 || setting("private_session")) return;
+    api("/history/skip", { method: "POST", body: { track_id: track.id } }).catch(() => {});
   }
 
   _onTime() {

@@ -4,7 +4,7 @@ import { api, emit, isLiked, loadPlaylists, on, setLiked, state } from "./api.js
 import { player } from "./player.js";
 import { generatePlaylistDialog } from "./playlistgen.js";
 import {
-  confirmDialog, cover, fmtDate, fmtTime, h, icon, modal, mosaic, openMenu, plural, prompt, toast,
+  confirmDialog, cover, coverUrl, fmtDate, fmtTime, h, icon, modal, mosaic, openMenu, plural, prompt, toast,
 } from "./ui.js";
 import { confirmDelete, setting } from "./usersettings.js";
 
@@ -299,15 +299,26 @@ export function playlistCard(p) {
   });
 }
 
+/** Cover der „Für dich gemacht“-Mixe: ein Albumcover mit farbigem Band und Namen (wie bei Spotify). */
+function feedCover(m) {
+  const el = h("div", { class: "cover feed-cover" });
+  el.style.setProperty("--mix-color", m.color || "#535353");
+  if (m.covers?.[0]) el.style.backgroundImage = `url("${coverUrl(m.covers[0], 300)}")`;
+  el.append(h("span", { class: "feed-cover-label" }, m.name));
+  return el;
+}
+
 export function mixCard(m) {
   const [kind, ...rest] = m.id.split(":");
   const value = rest.join(":");
+  const href = `#/mix/${kind}/${encodeURIComponent(value)}`;
   return card({
     title: m.name, subtitle: m.subtitle || plural(m.track_count || 0, "Song", "Songs"),
-    coverEl: mosaic(m.covers, { size: 300 }), href: `#/mix/${kind}/${encodeURIComponent(value)}`,
+    coverEl: m.feed ? feedCover(m) : mosaic(m.covers, { size: 300 }), href,
     onPlay: async () => {
       const tracks = await api(`/mix/${kind}?value=${encodeURIComponent(value)}&limit=${Number(setting("mix_size") || 60)}`);
-      player.playTracks(tracks, 0, { type: "mix", name: m.name, href: `#/mix/${kind}/${encodeURIComponent(value)}` });
+      if (!tracks.length) { toast("Dieser Mix ist gerade leer"); return; }
+      player.playTracks(tracks, 0, { type: "mix", id: `${kind}:${value}`, name: m.name, href });
     },
   });
 }

@@ -7,7 +7,7 @@ import random
 import time
 from typing import Any, Iterable
 
-from . import db
+from . import db, recommend
 from .covers import colors_for
 from .textutil import norm
 
@@ -93,6 +93,16 @@ def get_track_rows(ids: list[str]) -> list[dict[str, Any]]:
     for chunk in _chunks(list(dict.fromkeys(ids))):
         marks = ",".join("?" * len(chunk))
         for r in db.query(f"SELECT {TRACK_COLS} FROM tracks t WHERE t.id IN ({marks})", chunk):
+            found[r["id"]] = r
+    return [found[i] for i in ids if i in found]
+
+
+def albums_by_ids(ids: list[str]) -> list[dict[str, Any]]:
+    """Alben in der übergebenen Reihenfolge (fehlende werden übersprungen)."""
+    found: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(list(dict.fromkeys(ids))):
+        marks = ",".join("?" * len(chunk))
+        for r in db.query(f"SELECT * FROM albums WHERE id IN ({marks})", chunk):
             found[r["id"]] = r
     return [found[i] for i in ids if i in found]
 
@@ -331,7 +341,11 @@ def home(user_id: int, limit: int = 12) -> dict[str, Any]:
         (user_id, limit),
     )
     new_albums = db.query("SELECT * FROM albums ORDER BY added_at DESC LIMIT ?", (limit,))
-    discover = db.query("SELECT * FROM albums ORDER BY RANDOM() LIMIT ?", (limit,))
+    discover = albums_by_ids(recommend.recommended_albums(user_id, limit))
+    if len(discover) < limit:
+        seen = {a["id"] for a in discover}
+        discover += [a for a in db.query("SELECT * FROM albums ORDER BY RANDOM() LIMIT ?", (limit * 2,))
+                     if a["id"] not in seen][: limit - len(discover)]
     since = time.time() - 60 * 86400
     top_tracks = db.query(
         f"SELECT {TRACK_COLS}, COUNT(p.id) AS plays FROM plays p JOIN tracks t ON t.id = p.track_id "
@@ -363,16 +377,26 @@ def mixes() -> list[dict[str, Any]]:
     genres = db.query(
         "SELECT genre, COUNT(*) AS n FROM tracks WHERE genre != '' GROUP BY lower(genre) ORDER BY n DESC LIMIT 8"
     )
+    return [_genre_card(g["genre"], g["n"]) for g in genres]
+
+
+def mixes_for(genres: list[str]) -> list[dict[str, Any]]:
+    """Genre-Mix-Kacheln in der übergebenen Reihenfolge (z. B. die Lieblingsgenres eines Benutzers)."""
     out = []
-    for g in genres:
-        covers = [r["cover_id"] for r in db.query(
-            "SELECT cover_id FROM albums WHERE lower(genre) = lower(?) AND cover_id IS NOT NULL "
-            "ORDER BY track_count DESC LIMIT 4", (g["genre"],),
-        )]
-        out.append({"id": "genre:" + g["genre"], "name": f"{g['genre']} Mix", "genre": g["genre"],
-                    "track_count": g["n"], "covers": covers,
-                    "color": colors_for(covers[:1]).get(covers[0], "#535353") if covers else "#535353"})
+    for genre in genres:
+        n = db.query_one("SELECT COUNT(*) AS n FROM tracks WHERE lower(genre) = lower(?)", (genre,))["n"]
+        if n:
+            out.append(_genre_card(genre, n))
     return out
+
+
+def _genre_card(genre: str, count: int) -> dict[str, Any]:
+    covers = [r["cover_id"] for r in db.query(
+        "SELECT cover_id FROM albums WHERE lower(genre) = lower(?) AND cover_id IS NOT NULL "
+        "ORDER BY track_count DESC LIMIT 4", (genre,),
+    )]
+    return {"id": "genre:" + genre, "name": f"{genre} Mix", "genre": genre, "track_count": count, "covers": covers,
+            "color": colors_for(covers[:1]).get(covers[0], "#535353") if covers else "#535353"}
 
 
 def mix_tracks(kind: str, value: str, user_id: int, limit: int = 60) -> list[dict[str, Any]]:
