@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Homify</title>
+  <meta name="description" content="Dein eigenes Spotify fürs Homelab">
+  <meta name="theme-color" content="#121212">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Homify">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <!-- Anmeldung / Ersteinrichtung -->
+  <div id="auth" class="auth" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="auth-logo"></div>
+      <h1 id="auth-title">Bei Homify anmelden</h1>
+      <p id="auth-hint" class="muted"></p>
+      <label>Benutzername<input name="username" autocomplete="username" required maxlength="64"></label>
+      <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+      <label id="auth-confirm" hidden>Passwort wiederholen<input name="confirm" type="password" autocomplete="new-password"></label>
+      <p id="auth-error" class="error" role="alert"></p>
+      <button class="btn btn-primary btn-block" type="submit" id="auth-submit">Anmelden</button>
+    </form>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <nav class="sidebar" aria-label="Navigation">
+      <div class="panel nav-panel">
+        <a class="brand" href="#/"><span class="brand-logo"></span><span>Homify</span></a>
+        <a class="nav-link" data-nav="home" href="#/"><span data-icon="home"></span>Startseite</a>
+        <a class="nav-link" data-nav="search" href="#/search"><span data-icon="search"></span>Suchen</a>
+      </div>
+      <div class="panel library-panel">
+        <div class="library-head">
+          <a class="nav-link" data-nav="library" href="#/library"><span data-icon="library"></span>Bibliothek</a>
+          <button class="icon-btn" id="new-playlist" title="Playlist erstellen" aria-label="Playlist erstellen"><span data-icon="plus"></span></button>
+        </div>
+        <div class="library-list" id="sidebar-list"></div>
+      </div>
+    </nav>
+
+    <main class="main" id="main">
+      <header class="topbar" id="topbar">
+        <div class="topbar-nav">
+          <button class="round-btn" id="nav-back" title="Zurück" aria-label="Zurück"><span data-icon="chevronLeft"></span></button>
+          <button class="round-btn" id="nav-forward" title="Vor" aria-label="Vor"><span data-icon="chevronRight"></span></button>
+        </div>
+        <div class="topbar-search" id="topbar-search" hidden>
+          <span data-icon="search"></span>
+          <input id="search-input" type="search" placeholder="Was möchtest du hören? Name oder Spotify-Link" autocomplete="off" spellcheck="false" enterkeyhint="search">
+        </div>
+        <div class="topbar-actions">
+          <a class="pill-btn" id="downloads-indicator" href="#/downloads" hidden><span data-icon="download"></span><span id="downloads-count">0</span></a>
+          <button class="user-btn" id="user-btn" aria-label="Konto"><span data-icon="user"></span></button>
+        </div>
+      </header>
+      <div class="view" id="view"></div>
+    </main>
+
+    <aside class="queue-panel panel" id="queue-panel" hidden aria-label="Warteschlange"></aside>
+
+    <footer class="player" id="player">
+      <div class="player-progress-mobile"><div id="mobile-progress"></div></div>
+      <div class="np" id="np">
+        <div class="np-cover" id="np-cover"></div>
+        <div class="np-text">
+          <a class="np-title" id="np-title"></a>
+          <div class="np-artist" id="np-artist"></div>
+        </div>
+        <button class="icon-btn like-btn" id="np-like" aria-label="Zu Lieblingssongs"><span data-icon="heart"></span></button>
+      </div>
+      <div class="controls">
+        <div class="control-buttons">
+          <button class="icon-btn" id="btn-shuffle" title="Zufallswiedergabe" aria-label="Zufallswiedergabe"><span data-icon="shuffle"></span></button>
+          <button class="icon-btn" id="btn-prev" title="Zurück" aria-label="Zurück"><span data-icon="prev"></span></button>
+          <button class="play-btn" id="btn-play" title="Wiedergabe" aria-label="Wiedergabe"><span data-icon="play"></span></button>
+          <button class="icon-btn" id="btn-next" title="Weiter" aria-label="Weiter"><span data-icon="next"></span></button>
+          <button class="icon-btn" id="btn-repeat" title="Wiederholen" aria-label="Wiederholen"><span data-icon="repeat"></span></button>
+        </div>
+        <div class="progress-row">
+          <span class="time" id="time-cur">0:00</span>
+          <div class="slider" id="seek" role="slider" aria-label="Position" tabindex="0"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
+          <span class="time" id="time-total">0:00</span>
+        </div>
+      </div>
+      <div class="extras">
+        <button class="icon-btn" id="btn-lyrics" title="Songtext" aria-label="Songtext"><span data-icon="mic"></span></button>
+        <button class="icon-btn" id="btn-fullscreen" title="Vollbild-Player" aria-label="Vollbild-Player"><span data-icon="expand"></span></button>
+        <button class="icon-btn" id="btn-queue" title="Warteschlange" aria-label="Warteschlange"><span data-icon="queue"></span></button>
+        <button class="icon-btn" id="btn-mute" title="Stumm" aria-label="Stumm"><span data-icon="volume"></span></button>
+        <div class="slider volume" id="volume" role="slider" aria-label="Lautstärke" tabindex="0"><div class="slider-fill"></div><div class="slider-thumb"></div></div>
+      </div>
+    </footer>
+
+    <nav class="mobile-nav" aria-label="Navigation">
+      <a data-nav="home" href="#/"><span data-icon="home"></span>Start</a>
+      <a data-nav="search" href="#/search"><span data-icon="search"></span>Suchen</a>
+      <a data-nav="library" href="#/library"><span data-icon="library"></span>Bibliothek</a>
+      <a data-nav="downloads" href="#/downloads"><span data-icon="download"></span>Downloads</a>
+    </nav>
+  </div>
+
+  <div id="fullplayer" class="fullplayer" hidden></div>
+  <div id="menu-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <audio id="audio" preload="auto"></audio>
+  <audio id="audio2" preload="auto"></audio>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

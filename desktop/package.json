@@ -1,0 +1,61 @@
+{
+  "name": "homify-desktop",
+  "productName": "Homify",
+  "version": "1.0.0",
+  "description": "Homify – dein eigenes Spotify fürs Homelab (Windows-App)",
+  "main": "main.js",
+  "author": "ErikEdits",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --publish never"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "de.homify.desktop",
+    "productName": "Homify",
+    "copyright": "Homify",
+    "files": [
+      "main.js",
+      "preload.js",
+      "setup.html",
+      "setup.js",
+      "build/*.png"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Homify",
+      "artifactName": "Homify-Setup.${ext}",
+      "installerLanguages": ["de_DE"],
+      "language": "1031",
+      "uninstallDisplayName": "Homify"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png",
+      "category": "Audio",
+      "artifactName": "Homify.${ext}"
+    }
+  }
+}
