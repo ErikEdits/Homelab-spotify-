@@ -507,6 +507,15 @@ class PlaylistIn(BaseModel):
 class PlaylistPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    public: bool | None = None  # veröffentlichen = für alle Homify-Benutzer sichtbar
+
+
+class PlaylistGenerate(BaseModel):
+    source: str = Field(pattern="^(song|artist|genre|decade|top|liked|new|rediscover|random)$")
+    value: str = Field(default="", max_length=300)
+    count: int = Field(default=50, ge=5, le=500)
+    name: str = Field(default="", max_length=200)
+    public: bool = False
 
 
 class PlaylistOrder(BaseModel):
@@ -544,17 +553,46 @@ def playlists(user: dict = Depends(auth.current_user)):
     return library.user_playlists(user["id"])
 
 
-@app.post("/api/playlists")
-def create_playlist(body: PlaylistIn, user: dict = Depends(auth.current_user)):
+def _new_playlist(user_id: int, name: str, description: str = "", track_ids: list[str] | None = None,
+                  public: bool = False) -> int:
     now = time.time()
     cur = db.execute(
-        "INSERT INTO playlists (user_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (user["id"], body.name.strip(), body.description.strip(), now, now),
+        "INSERT INTO playlists (user_id, name, description, public, published_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, name.strip(), description.strip(), int(public), now if public else None, now, now),
     )
     pid = int(cur.lastrowid)
-    if body.track_ids:
-        _append_tracks(pid, body.track_ids[:5000])
-    return library.playlist_summary(pid)
+    if track_ids:
+        _append_tracks(pid, track_ids[:5000])
+    return pid
+
+
+@app.post("/api/playlists")
+def create_playlist(body: PlaylistIn, user: dict = Depends(auth.current_user)):
+    pid = _new_playlist(user["id"], body.name, body.description, body.track_ids)
+    return library.playlist_summary(pid, user["id"])
+
+
+@app.get("/api/playlists/public")
+def shared_playlists(user: dict = Depends(auth.current_user)):
+    """Von anderen Benutzern veröffentlichte Playlists."""
+    return library.public_playlists(user["id"])
+
+
+@app.get("/api/playlists/generator")
+def playlist_generator_options(user: dict = Depends(auth.current_user)):
+    return library.generator_options(user["id"])
+
+
+@app.post("/api/playlists/generate")
+def generate_playlist(body: PlaylistGenerate, user: dict = Depends(auth.current_user)):
+    """Playlist automatisch zusammenstellen (ähnlich wie ein Song/Künstler, Genre, Jahrzehnt, Top-Songs …)."""
+    ids, suggested = library.generate_playlist_tracks(body.source, body.value, user["id"], body.count)
+    if not ids:
+        raise HTTPException(400, "Dafür gibt es (noch) keine passenden Songs.")
+    desc = f"Automatisch zusammengestellt am {time.strftime('%d.%m.%Y')}"
+    pid = _new_playlist(user["id"], body.name.strip() or suggested, desc, ids, body.public)
+    return library.playlist_summary(pid, user["id"])
 
 
 @app.get("/api/playlists/{playlist_id}")
@@ -567,14 +605,51 @@ def playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
 
 @app.patch("/api/playlists/{playlist_id}")
 def update_playlist(playlist_id: int, body: PlaylistPatch, user: dict = Depends(auth.current_user)):
-    _own_playlist(playlist_id, user)
+    row = _own_playlist(playlist_id, user)
+    if body.public is not None and bool(row["public"]) != body.public:
+        db.execute("UPDATE playlists SET public = ?, published_at = ? WHERE id = ?",
+                   (int(body.public), time.time() if body.public else None, playlist_id))
     if body.name is not None:
         db.execute("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?",
                    (body.name.strip(), time.time(), playlist_id))
     if body.description is not None:
         db.execute("UPDATE playlists SET description = ?, updated_at = ? WHERE id = ?",
                    (body.description.strip(), time.time(), playlist_id))
-    return library.playlist_summary(playlist_id)
+    return library.playlist_summary(playlist_id, user["id"])
+
+
+def _public_playlist(playlist_id: int, user: dict) -> dict[str, Any]:
+    row = db.query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+    if not row or (row["user_id"] != user["id"] and not row["public"]):
+        raise HTTPException(404, "Playlist nicht gefunden")
+    return row
+
+
+@app.put("/api/playlists/{playlist_id}/follow")
+def follow_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    row = _public_playlist(playlist_id, user)
+    if row["user_id"] == user["id"]:
+        raise HTTPException(400, "Das ist deine eigene Playlist.")
+    db.execute("INSERT OR IGNORE INTO playlist_follows (user_id, playlist_id, followed_at) VALUES (?, ?, ?)",
+               (user["id"], playlist_id, time.time()))
+    return library.playlist_summary(playlist_id, user["id"])
+
+
+@app.delete("/api/playlists/{playlist_id}/follow")
+def unfollow_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    db.execute("DELETE FROM playlist_follows WHERE user_id = ? AND playlist_id = ?", (user["id"], playlist_id))
+    return {"ok": True}
+
+
+@app.post("/api/playlists/{playlist_id}/copy")
+def copy_playlist(playlist_id: int, user: dict = Depends(auth.current_user)):
+    """Veröffentlichte (oder eigene) Playlist als eigene, bearbeitbare Kopie übernehmen."""
+    row = _public_playlist(playlist_id, user)
+    ids = [r["track_id"] for r in db.query(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position, id", (playlist_id,))]
+    name = row["name"] if row["user_id"] != user["id"] else f"{row['name']} (Kopie)"
+    pid = _new_playlist(user["id"], name, row["description"], ids)
+    return library.playlist_summary(pid, user["id"])
 
 
 @app.delete("/api/playlists/{playlist_id}")

@@ -6,6 +6,7 @@ import {
   playArtist, playButton, playlistCard, shelf, trackList,
 } from "./components.js";
 import { player } from "./player.js";
+import { generatePlaylistDialog } from "./playlistgen.js";
 import {
   clear, confirmDialog, cover, debounce, fmtDuration, h, icon, mosaic, openMenu, plural, prompt, toast,
 } from "./ui.js";
@@ -129,6 +130,7 @@ export async function homeView() {
   root.append(
     show("home_artists") ? shelf("Deine Künstler", data.top_artists.map(artistCard), { href: "#/library?tab=artists" }) : null,
     show("home_playlists") ? shelf("Deine Playlists", data.playlists.map(playlistCard), { href: "#/library?tab=playlists" }) : null,
+    show("home_playlists") ? shelf("Von anderen geteilt", (data.shared || []).map(playlistCard), { href: "#/library?tab=playlists" }) : null,
     show("home_discover") ? shelf("Entdecken", data.discover.map((a) => albumCard(a))) : null,
     h("p", { class: "subtle", style: { marginTop: "24px", fontSize: "12px" } },
       `${plural(data.stats.tracks, "Song", "Songs")} · ${plural(data.stats.albums, "Album", "Alben")} · ${plural(data.stats.artists, "Künstler", "Künstler")} · ${fmtDuration(data.stats.duration)}`),
@@ -180,7 +182,16 @@ export async function libraryView(_params, query) {
         : p.special === "downloads"
           ? card({ title: "Downloads", subtitle: "Von Spotify holen", coverEl: h("div", { class: "cover downloads" }, icon("download")), href: "#/downloads" })
           : playlistCard(p))));
-    root.querySelector(".toolbar").append(h("button", { class: "btn btn-small btn-primary", onclick: createPlaylist }, icon("plus"), "Neue Playlist"));
+    root.querySelector(".toolbar").append(
+      h("button", { class: "btn btn-small btn-outline", onclick: () => generatePlaylistDialog() }, icon("sparkle", "sm"), "Zusammenstellen"),
+      h("button", { class: "btn btn-small btn-primary", onclick: createPlaylist }, icon("plus"), "Neue Playlist"));
+    const shared = (await api("/playlists/public").catch(() => [])).filter((p) => !p.followed);
+    if (shared.length) {
+      root.append(h("section", { class: "section", style: { marginTop: "32px" } },
+        h("div", { class: "section-head" }, h("h2", {}, "Von anderen geteilt"),
+          h("span", { class: "muted", style: { fontSize: "13px" } }, "Veröffentlichte Playlists der anderen Benutzer – zum Hören, Folgen oder Kopieren")),
+        h("div", { class: "grid" }, shared.map(playlistCard))));
+    }
   } else if (tab === "albums") {
     const sortSel = h("select", { class: "input", "aria-label": "Sortierung" },
       [["name", "Name"], ["artist", "Künstler"], ["added", "Zuletzt hinzugefügt"], ["year", "Jahr"]].map(([v, l]) => h("option", { value: v, selected: v === sort }, l)));
@@ -286,6 +297,7 @@ export async function artistView({ id }) {
         const tracks = await api(`/artists/${a.id}/tracks`);
         player.playTracks(tracks, Math.floor(Math.random() * tracks.length), context);
       }),
+      h("button", { class: "btn btn-outline btn-small", onclick: () => generatePlaylistDialog({ source: "artist", value: a.id, label: a.name }) }, icon("sparkle", "sm"), "Playlist zusammenstellen"),
       h("a", { class: "btn btn-outline btn-small", href: `#/search?q=${encodeURIComponent(a.name)}` }, icon("cloud", "sm"), "Mehr auf Spotify finden")),
     h("section", { class: "section" }, h("div", { class: "section-head" }, h("h2", {}, "Beliebt")), popularHost),
     shelf("Diskografie", a.albums.map((x) => albumCard(x, { subtitle: [x.year || null, x.track_count === 1 ? "Single" : "Album"].filter(Boolean).join(" • ") }))),
@@ -297,16 +309,20 @@ export async function artistView({ id }) {
 // ---------------------------------------------------------------- Playlist
 export async function playlistView({ id }) {
   const p = await api(`/playlists/${encodeURIComponent(id)}`);
+  const own = p.own !== false;  // eigene Playlist oder veröffentlichte eines anderen Benutzers
   const context = { type: "playlist", id: p.id, name: p.name, href: `#/playlist/${p.id}` };
   const playBtn = contextPlayButton(p.id, () => player.playTracks(p.tracks, 0, context));
+  const reload = () => { loadPlaylists(); navigate(`#/playlist/${p.id}`); };
   const listHost = h("div");
   const drawList = () => {
     clear(listHost);
     if (!p.tracks.length) {
-      listHost.append(h("p", { class: "muted" }, "Diese Playlist ist noch leer. Füge unten Songs hinzu oder nutze „Zur Playlist hinzufügen“ im Menü eines Songs."));
+      listHost.append(h("p", { class: "muted" }, own
+        ? "Diese Playlist ist noch leer. Füge unten Songs hinzu oder nutze „Zur Playlist hinzufügen“ im Menü eines Songs."
+        : "Diese Playlist ist leer."));
       return;
     }
-    listHost.append(trackList(p.tracks, {
+    listHost.append(trackList(p.tracks, own ? {
       added: true, context, playlistId: p.id,
       onChange: () => emit("playlist-changed", p.id),
       onReorder: async (tracks) => {
@@ -315,7 +331,7 @@ export async function playlistView({ id }) {
           await api(`/playlists/${p.id}/order`, { method: "PUT", body: { entry_ids: tracks.map((t) => t.entry_id) } });
         } catch (e) { toast(e.message, { error: true }); }
       },
-    }));
+    } : { added: true, context }));
   };
   drawList();
 
@@ -323,8 +339,7 @@ export async function playlistView({ id }) {
     const name = await prompt("Playlist umbenennen", { label: "Name", value: p.name });
     if (!name) return;
     await api(`/playlists/${p.id}`, { method: "PATCH", body: { name } });
-    await loadPlaylists();
-    navigate(`#/playlist/${p.id}`);
+    reload();
   };
   const editDesc = async () => {
     const description = await prompt("Beschreibung", { label: "Beschreibung", value: p.description });
@@ -338,53 +353,98 @@ export async function playlistView({ id }) {
     await loadPlaylists();
     navigate("#/library");
   };
+  // Veröffentlichen: für alle Homify-Benutzer sichtbar (hören, folgen, kopieren – nicht bearbeiten)
+  const togglePublic = async () => {
+    if (p.public && !await confirmDialog("Nicht mehr veröffentlichen?",
+      "Die anderen Benutzer sehen die Playlist dann nicht mehr – auch wenn sie ihr folgen.", { okLabel: "Privat machen" })) return;
+    try {
+      const r = await api(`/playlists/${p.id}`, { method: "PATCH", body: { public: !p.public } });
+      toast(r.public ? "Veröffentlicht – alle Homify-Benutzer finden sie unter „Von anderen geteilt“" : "Die Playlist ist wieder privat");
+      reload();
+    } catch (e) { toast(e.message, { error: true }); }
+  };
+  const toggleFollow = async () => {
+    try {
+      await api(`/playlists/${p.id}/follow`, { method: p.followed ? "DELETE" : "PUT" });
+      toast(p.followed ? "Du folgst der Playlist nicht mehr" : "Gefolgt – die Playlist steht jetzt in deiner Bibliothek");
+      reload();
+    } catch (e) { toast(e.message, { error: true }); }
+  };
+  const copy = async () => {
+    try {
+      const c = await api(`/playlists/${p.id}/copy`, { method: "POST" });
+      toast(`„${c.name}“ ist jetzt deine eigene Playlist`);
+      await loadPlaylists();
+      navigate(`#/playlist/${c.id}`);
+    } catch (e) { toast(e.message, { error: true }); }
+  };
 
-  // Songs hinzufügen (Suche in der Bibliothek)
-  const addInput = h("input", { class: "input", type: "search", placeholder: "Nach Songs für diese Playlist suchen", style: { maxWidth: "420px" } });
-  const addResults = h("div");
-  addInput.addEventListener("input", debounce(async () => {
-    const q = addInput.value.trim();
-    clear(addResults);
-    if (!q) return;
-    const res = await api(`/search?q=${encodeURIComponent(q)}`);
-    for (const t of res.tracks.slice(0, 12)) {
-      addResults.append(h("div", { class: "list-row" }, cover(t.cover, { size: 64 }),
-        h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { class: "ellipsis" }, t.title), h("div", { class: "muted ellipsis", style: { fontSize: "13px" } }, t.artist)),
-        h("button", { class: "btn btn-small btn-outline", onclick: async (e) => {
-          e.stopPropagation();
-          await api(`/playlists/${p.id}/tracks`, { method: "POST", body: { ids: [t.id] } });
-          const fresh = await api(`/playlists/${p.id}`);
-          p.tracks = fresh.tracks;
-          drawList();
-          loadPlaylists();
-          toast("Hinzugefügt");
-        } }, "Hinzufügen")));
-    }
-    if (!res.tracks.length) addResults.append(h("p", { class: "muted" }, "Nicht in deiner Bibliothek? ", h("a", { class: "link", href: `#/search?q=${encodeURIComponent(q)}`, style: { color: "var(--accent)" } }, "Auf Spotify suchen und holen")));
-  }, 250));
+  const publishBtn = own
+    ? h("button", { class: `btn btn-small ${p.public ? "btn-outline follow-btn following" : "btn-outline"}`, title: p.public ? "Für alle Homify-Benutzer sichtbar – klicken zum Privatmachen" : "Für alle Homify-Benutzer sichtbar machen", onclick: togglePublic },
+      icon("globe", "sm"), p.public ? "Veröffentlicht" : "Veröffentlichen")
+    : h("button", { class: `btn btn-small btn-outline follow-btn ${p.followed ? "following" : ""}`, onclick: toggleFollow }, p.followed ? "Gefolgt" : "Folgen");
+  const menu = (e) => openMenu(e, own ? [
+    { title: p.name },
+    { label: "Zur Warteschlange hinzufügen", icon: "addQueue", action: () => { player.addToQueue(p.tracks); toast("Zur Warteschlange hinzugefügt"); } },
+    { label: p.public ? "Nicht mehr veröffentlichen" : "Veröffentlichen", icon: "globe", action: togglePublic },
+    { label: "Umbenennen", icon: "edit", action: rename },
+    { label: "Beschreibung bearbeiten", icon: "edit", action: editDesc },
+    { label: "Kopie erstellen", icon: "copy", action: copy },
+    "sep",
+    { label: "Playlist löschen", icon: "trash", danger: true, action: remove },
+  ] : [
+    { title: `${p.name} · von ${p.owner}` },
+    { label: "Zur Warteschlange hinzufügen", icon: "addQueue", action: () => { player.addToQueue(p.tracks); toast("Zur Warteschlange hinzugefügt"); } },
+    { label: p.followed ? "Nicht mehr folgen" : "Folgen", icon: "heart", action: toggleFollow },
+    { label: "Als eigene Playlist kopieren", icon: "copy", action: copy },
+  ]);
+
+  // Songs hinzufügen (Suche in der Bibliothek) – nur bei eigenen Playlists
+  let addSection = null;
+  if (own) {
+    const addInput = h("input", { class: "input", type: "search", placeholder: "Nach Songs für diese Playlist suchen", style: { maxWidth: "420px" } });
+    const addResults = h("div");
+    addInput.addEventListener("input", debounce(async () => {
+      const q = addInput.value.trim();
+      clear(addResults);
+      if (!q) return;
+      const res = await api(`/search?q=${encodeURIComponent(q)}`);
+      for (const t of res.tracks.slice(0, 12)) {
+        addResults.append(h("div", { class: "list-row" }, cover(t.cover, { size: 64 }),
+          h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { class: "ellipsis" }, t.title), h("div", { class: "muted ellipsis", style: { fontSize: "13px" } }, t.artist)),
+          h("button", { class: "btn btn-small btn-outline", onclick: async (e) => {
+            e.stopPropagation();
+            await api(`/playlists/${p.id}/tracks`, { method: "POST", body: { ids: [t.id] } });
+            const fresh = await api(`/playlists/${p.id}`);
+            p.tracks = fresh.tracks;
+            drawList();
+            loadPlaylists();
+            toast("Hinzugefügt");
+          } }, "Hinzufügen")));
+      }
+      if (!res.tracks.length) addResults.append(h("p", { class: "muted" }, "Nicht in deiner Bibliothek? ", h("a", { class: "link", href: `#/search?q=${encodeURIComponent(q)}`, style: { color: "var(--accent)" } }, "Auf Spotify suchen und holen")));
+    }, 250));
+    addSection = h("section", { class: "section", style: { marginTop: "40px" } },
+      h("div", { class: "section-head" }, h("h2", {}, "Songs hinzufügen")), addInput, addResults);
+  }
 
   const root = inner(
     hero({
       coverEl: mosaic(p.covers, { size: 640, cls: "hero-cover" }),
-      type: "Playlist", title: p.name, desc: p.description || null,
-      meta: [h("strong", {}, state.user?.username || ""), plural(p.track_count, "Song", "Songs"), p.duration ? fmtDuration(p.duration) : null],
+      type: p.public ? "Veröffentlichte Playlist" : "Playlist", title: p.name, desc: p.description || null,
+      meta: [h("strong", {}, p.owner || state.user?.username || ""), plural(p.track_count, "Song", "Songs"), p.duration ? fmtDuration(p.duration) : null],
     }),
     h("div", { class: "actionbar" }, playBtn,
       shuffleButton(() => player.playTracks(p.tracks, Math.floor(Math.random() * p.tracks.length), context)),
-      h("button", { class: "icon-btn", "aria-label": "Mehr", onclick: (e) => openMenu(e, [
-        { title: p.name },
-        { label: "Zur Warteschlange hinzufügen", icon: "addQueue", action: () => { player.addToQueue(p.tracks); toast("Zur Warteschlange hinzugefügt"); } },
-        { label: "Umbenennen", icon: "edit", action: rename },
-        { label: "Beschreibung bearbeiten", icon: "edit", action: editDesc },
-        "sep",
-        { label: "Playlist löschen", icon: "trash", danger: true, action: remove },
-      ]) }, icon("more"))),
+      publishBtn,
+      h("button", { class: "icon-btn", "aria-label": "Mehr", onclick: menu }, icon("more"))),
     listHost,
-    h("section", { class: "section", style: { marginTop: "40px" } },
-      h("div", { class: "section-head" }, h("h2", {}, "Songs hinzufügen")), addInput, addResults),
+    addSection,
   );
-  root.querySelector(".hero-title").addEventListener("click", rename);
-  root.querySelector(".hero-title").style.cursor = "pointer";
+  if (own) {
+    root.querySelector(".hero-title").addEventListener("click", rename);
+    root.querySelector(".hero-title").style.cursor = "pointer";
+  }
   return { el: root, color: p.color, title: p.name, destroy: () => playBtn._cleanup() };
 }
 

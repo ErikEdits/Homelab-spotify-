@@ -1,14 +1,15 @@
 // Einstieg: Anmeldung, Router, Seitenleiste, Player-Leiste, Warteschlange, Vollbild-Player
 
 import { api, loadPlaylists, on, prefs, setUnauthorizedHandler, state } from "./api.js";
-import { artistLinks, likeButton, navigate, trackMenu } from "./components.js";
+import { artistLinks, likeButton, navigate, playlistSubtitle, trackMenu } from "./components.js";
 import { downloads, downloadsView, refreshDownloads } from "./downloads.js";
 import { lyricsView } from "./lyricsview.js";
 import { player } from "./player.js";
+import { generatePlaylistDialog } from "./playlistgen.js";
 import { searchView } from "./search.js";
 import { appsView, settingsView } from "./settings.js";
 import {
-  clear, closeMenu, cover, coverUrl, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, plural, toast,
+  clear, closeMenu, cover, coverUrl, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, toast,
 } from "./ui.js";
 import { applyAppearance, loadSettings, saveSettings, setting } from "./usersettings.js";
 import {
@@ -170,7 +171,10 @@ function setupShell() {
   $("view").addEventListener("scroll", onScroll, { passive: true });
   $("nav-back").addEventListener("click", () => history.back());
   $("nav-forward").addEventListener("click", () => history.forward());
-  $("new-playlist").addEventListener("click", createPlaylist);
+  $("new-playlist").addEventListener("click", (e) => openMenu(e, [
+    { label: "Neue Playlist", icon: "plus", action: createPlaylist },
+    { label: "Playlist zusammenstellen …", icon: "sparkle", action: () => generatePlaylistDialog() },
+  ]));
   $("user-btn").addEventListener("click", (e) => openMenu(e, [
     { title: state.user.username },
     { label: "Einstellungen", icon: "settings", action: () => navigate("#/settings") },
@@ -224,7 +228,7 @@ function renderSidebar() {
     item("#/downloads", h("div", { class: "cover downloads" }, icon("download")), "Downloads", downloads.active ? `${downloads.active} aktiv` : "Von Spotify holen"),
   );
   for (const p of state.playlists) {
-    list.append(item(`#/playlist/${p.id}`, mosaic(p.covers, { size: 96 }), p.name, `Playlist · ${plural(p.track_count, "Song", "Songs")}`));
+    list.append(item(`#/playlist/${p.id}`, mosaic(p.covers, { size: 96 }), p.name, `Playlist · ${playlistSubtitle(p)}`));
   }
 }
 

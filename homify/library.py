@@ -223,7 +223,7 @@ def search(q: str, user_id: int, limit: int = 50) -> dict[str, Any]:
     artists = db.query(f"SELECT * FROM artists WHERE {a_clause} ORDER BY track_count DESC LIMIT 24", a_params)
     p_clause, p_params = _like_clause("lower(name)", [t for t in terms])
     playlists = db.query(
-        f"SELECT id FROM playlists WHERE user_id = ? AND {p_clause} LIMIT 12", [user_id, *p_params]
+        f"SELECT id FROM playlists WHERE (user_id = ? OR public = 1) AND {p_clause} LIMIT 12", [user_id, *p_params]
     )
     return {
         "tracks": tracks_json(tracks[:limit], user_id),
@@ -237,8 +237,11 @@ def search(q: str, user_id: int, limit: int = 50) -> dict[str, Any]:
 # Playlists & Lieblingssongs
 # --------------------------------------------------------------------------- #
 
-def playlist_summary(playlist_id: int) -> dict[str, Any] | None:
-    row = db.query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+def playlist_summary(playlist_id: int, viewer_id: int | None = None) -> dict[str, Any] | None:
+    row = db.query_one(
+        "SELECT p.*, u.username AS owner FROM playlists p LEFT JOIN users u ON u.id = p.user_id WHERE p.id = ?",
+        (playlist_id,),
+    )
     if not row:
         return None
     agg = db.query_one(
@@ -254,22 +257,41 @@ def playlist_summary(playlist_id: int) -> dict[str, Any] | None:
         )
     ]
     colors = colors_for(covers[:1])
-    return {
+    out = {
         "id": row["id"], "name": row["name"], "description": row["description"], "user_id": row["user_id"],
         "track_count": agg["n"], "duration": agg["d"], "covers": covers,
         "color": colors.get(covers[0], "#535353") if covers else "#535353",
         "created_at": row["created_at"], "updated_at": row["updated_at"],
+        "owner": row["owner"] or "", "public": bool(row["public"]), "published_at": row["published_at"],
     }
+    if viewer_id is not None:
+        out["own"] = row["user_id"] == viewer_id
+        out["followed"] = bool(not out["own"] and db.query_one(
+            "SELECT 1 AS x FROM playlist_follows WHERE user_id = ? AND playlist_id = ?", (viewer_id, playlist_id)))
+    return out
 
 
 def user_playlists(user_id: int) -> list[dict[str, Any]]:
+    """Eigene Playlists + veröffentlichte Playlists anderer, denen man folgt."""
     rows = db.query("SELECT id FROM playlists WHERE user_id = ? ORDER BY updated_at DESC", (user_id,))
-    return [p for p in (playlist_summary(r["id"]) for r in rows) if p]
+    followed = db.query(
+        "SELECT p.id FROM playlist_follows f JOIN playlists p ON p.id = f.playlist_id "
+        "WHERE f.user_id = ? AND p.public = 1 AND p.user_id != ? ORDER BY f.followed_at DESC", (user_id, user_id))
+    return [p for p in (playlist_summary(r["id"], user_id) for r in rows + followed) if p]
+
+
+def public_playlists(user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    """Von anderen Benutzern veröffentlichte Playlists (neueste zuerst)."""
+    rows = db.query(
+        "SELECT id FROM playlists WHERE public = 1 AND user_id != ? ORDER BY COALESCE(published_at, updated_at) DESC "
+        "LIMIT ?", (user_id, limit))
+    return [p for p in (playlist_summary(r["id"], user_id) for r in rows) if p and p["track_count"]]
 
 
 def playlist_detail(playlist_id: int, user_id: int) -> dict[str, Any] | None:
-    summary = playlist_summary(playlist_id)
-    if not summary or summary["user_id"] != user_id:
+    """Eigene Playlist oder eine veröffentlichte eines anderen Benutzers."""
+    summary = playlist_summary(playlist_id, user_id)
+    if not summary or (summary["user_id"] != user_id and not summary["public"]):
         return None
     rows = db.query(
         f"SELECT {TRACK_COLS}, pt.id AS entry_id, pt.added_at AS entry_added FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id "
@@ -331,6 +353,7 @@ def home(user_id: int, limit: int = 12) -> dict[str, Any]:
         "top_artists": artist_json(top_artists),
         "mixes": mixes()[:limit],
         "playlists": user_playlists(user_id)[:limit],
+        "shared": public_playlists(user_id, limit),
         "liked_count": db.query_one("SELECT COUNT(*) AS n FROM likes WHERE user_id = ?", (user_id,))["n"],
         "stats": stats(),
     }
@@ -400,3 +423,113 @@ def genres() -> list[dict[str, Any]]:
         )
         out.append({"name": g["genre"], "count": g["n"], "cover": cover["cover_id"] if cover else None})
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Playlist automatisch zusammenstellen
+# --------------------------------------------------------------------------- #
+
+GENERATOR_SOURCES = ("song", "artist", "genre", "decade", "top", "liked", "new", "rediscover", "random")
+
+
+def _ids(sql: str, params: Iterable[Any] = ()) -> list[str]:
+    return [r["id"] for r in db.query(sql, params)]
+
+
+def _spread_artists(ids: list[str]) -> list[str]:
+    """Möglichst nie zweimal derselbe Künstler direkt hintereinander."""
+    if len(ids) < 3:
+        return ids
+    artist = {r["id"]: r["artist"] for r in db.query(
+        "SELECT id, artist FROM tracks WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)}
+    out = list(ids)
+    for i in range(1, len(out)):
+        if artist.get(out[i]) != artist.get(out[i - 1]):
+            continue
+        for j in range(i + 1, len(out)):
+            if artist.get(out[j]) != artist.get(out[i - 1]):
+                out[i], out[j] = out[j], out[i]
+                break
+    return out
+
+
+def generate_playlist_tracks(source: str, value: str, user_id: int, count: int) -> tuple[list[str], str]:
+    """Songs für eine automatisch zusammengestellte Playlist + Namensvorschlag."""
+    count = max(5, min(int(count or 50), 500))
+    shuffle = True
+    if source == "song":
+        seed = db.query_one("SELECT id, title FROM tracks WHERE id = ?", (value,))
+        if not seed:
+            raise ValueError("Song nicht gefunden")
+        ids = [t["id"] for t in mix_tracks("radio", value, user_id, count)]
+        name, shuffle = f"Ähnlich wie {seed['title']}", False  # Startsong bleibt vorne
+        ids = ids[:1] + _spread_artists(ids[1:])
+    elif source == "artist":
+        artist = db.query_one("SELECT id, name FROM artists WHERE id = ?", (value,))
+        if not artist:
+            raise ValueError("Künstler nicht gefunden")
+        own = _ids("SELECT t.id FROM tracks t JOIN track_artists ta ON ta.track_id = t.id WHERE ta.artist_id = ? "
+                   "ORDER BY RANDOM() LIMIT ?", (value, max(5, count // 2)))
+        genres = [r["genre"] for r in db.query(
+            "SELECT t.genre, COUNT(*) AS n FROM tracks t JOIN track_artists ta ON ta.track_id = t.id "
+            "WHERE ta.artist_id = ? AND t.genre != '' GROUP BY lower(t.genre) ORDER BY n DESC LIMIT 3", (value,))]
+        similar = _ids(
+            "SELECT t.id FROM tracks t WHERE lower(t.genre) IN (%s) AND t.id NOT IN (SELECT track_id FROM track_artists "
+            "WHERE artist_id = ?) ORDER BY RANDOM() LIMIT ?" % ",".join("lower(?)" for _ in genres),
+            [*genres, value, count]) if genres else []
+        ids = own + similar
+        name = f"{artist['name']} & Ähnliches"
+    elif source == "genre":
+        ids = _ids("SELECT id FROM tracks WHERE lower(genre) = lower(?) ORDER BY RANDOM() LIMIT ?", (value, count))
+        name = f"{value} Mix"
+    elif source == "decade":
+        start = int(value or 0) // 10 * 10
+        if start < 1900:
+            raise ValueError("Ungültiges Jahrzehnt")
+        ids = _ids("SELECT id FROM tracks WHERE year BETWEEN ? AND ? ORDER BY RANDOM() LIMIT ?",
+                   (start, start + 9, count))
+        name = f"Die {str(start)[2:]}er" if start < 2000 else f"Die {start}er"
+    elif source == "top":
+        ids = _ids("SELECT t.id FROM plays p JOIN tracks t ON t.id = p.track_id WHERE p.user_id = ? "
+                   "GROUP BY t.id ORDER BY COUNT(p.id) DESC, MAX(p.played_at) DESC LIMIT ?", (user_id, count))
+        name, shuffle = "Meine Top-Songs", False
+    elif source == "liked":
+        ids = _ids("SELECT t.id FROM likes l JOIN tracks t ON t.id = l.track_id WHERE l.user_id = ? "
+                   "ORDER BY RANDOM() LIMIT ?", (user_id, count))
+        name = "Lieblingssongs gemischt"
+    elif source == "new":
+        ids = _ids("SELECT id FROM tracks ORDER BY added_at DESC LIMIT ?", (count,))
+        name, shuffle = "Neu in der Bibliothek", False
+    elif source == "rediscover":
+        # Songs, die du länger nicht (oder noch nie) gehört hast – Lieblingssongs zuerst
+        since = time.time() - 60 * 86400
+        ids = _ids(
+            "SELECT t.id FROM tracks t LEFT JOIN likes l ON l.track_id = t.id AND l.user_id = ? "
+            "WHERE t.id NOT IN (SELECT track_id FROM plays WHERE user_id = ? AND played_at > ?) "
+            "ORDER BY (l.track_id IS NULL), RANDOM() LIMIT ?", (user_id, user_id, since, count))
+        name = "Wiederentdecken"
+    elif source == "random":
+        ids = _ids("SELECT id FROM tracks ORDER BY RANDOM() LIMIT ?", (count,))
+        name = "Zufallsmix"
+    else:
+        raise ValueError("Unbekannte Grundlage")
+    ids = list(dict.fromkeys(ids))[:count]
+    if shuffle:
+        random.shuffle(ids)
+        ids = _spread_artists(ids)
+    return ids, name
+
+
+def generator_options(user_id: int) -> dict[str, Any]:
+    """Was der Dialog „Playlist zusammenstellen“ anbieten kann."""
+    decades = [
+        {"value": r["d"], "count": r["n"]} for r in db.query(
+            "SELECT (year / 10) * 10 AS d, COUNT(*) AS n FROM tracks WHERE year >= 1900 GROUP BY d ORDER BY d DESC")
+    ]
+    return {
+        "genres": [{"name": g["name"], "count": g["count"]} for g in genres()],
+        "decades": decades,
+        "liked": db.query_one("SELECT COUNT(*) AS n FROM likes WHERE user_id = ?", (user_id,))["n"],
+        "played": db.query_one("SELECT COUNT(DISTINCT track_id) AS n FROM plays WHERE user_id = ?", (user_id,))["n"],
+        "tracks": stats()["tracks"],
+    }
