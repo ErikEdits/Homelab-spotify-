@@ -29,6 +29,48 @@ def match_key(text: str | None) -> str:
     return _NON_WORD.sub("", text)
 
 
+_BRACKETS = re.compile(r"\s*[\(\[]([^\)\]]*)[\)\]]")
+_DASH_EXTRA = re.compile(r"\s+-\s+(.+)$")
+_FEAT_START = re.compile(r"^(feat\.?|ft\.?|featuring|with|mit)\s", re.IGNORECASE)
+# Zusätze, die eine andere Aufnahme bezeichnen -> bleibt ein eigener Song
+_OTHER_VERSION = re.compile(
+    r"remix|\bmix\b|live|acoustic|akustik|unplugged|instrumental|\bedit\b|demo|karaoke|a ?cappella|reprise|"
+    r"sped up|slowed|nightcore|extended|\bdub\b|\bclub\b|\bradio\b|cover",
+    re.IGNORECASE,
+)
+# Zusätze ohne Bedeutung für den Vergleich („Remastered 2011“, „Album Version“ …)
+_NOISE = re.compile(
+    r"remaster|album version|single version|original (mix|version)|explicit|\bclean\b|\bmono\b|\bstereo\b|"
+    r"bonus track|deluxe|anniversary",
+    re.IGNORECASE,
+)
+_ARTIST_SPLIT = re.compile(r"\s*(?:,|;|/|\s&\s|\sx\s|\sund\s|\sand\s|\s(?:feat\.?|ft\.?|featuring)\s)\s*")
+
+
+def _unimportant(extra: str) -> bool:
+    extra = extra.strip()
+    if not extra or _FEAT_START.match(extra) or re.search(r"original (mix|version)", extra, re.I):
+        return True
+    if _OTHER_VERSION.search(extra):
+        return False
+    return bool(_NOISE.search(extra))
+
+
+def dup_key(title: str | None, artist: str | None) -> str:
+    """Schlüssel für „derselbe Song“: Titel + Hauptinterpret, ohne Remaster-/feat.-Zusätze.
+    „Song (Remix)“ oder „Song - Live“ bleiben eigene Songs."""
+    t = norm(title)
+    if not t:
+        return ""
+    t = _BRACKETS.sub(lambda m: "" if _unimportant(m.group(1)) else " " + m.group(1), t)
+    m = _DASH_EXTRA.search(t)
+    if m and _unimportant(m.group(1)):
+        t = t[:m.start()]
+    t = _FEAT.sub("", t)
+    a = _ARTIST_SPLIT.split(norm(artist))[0]
+    return _NON_WORD.sub("", t) + "|" + _NON_WORD.sub("", a)
+
+
 def make_id(*parts: str, length: int = 16) -> str:
     raw = "\x1f".join(norm(p) for p in parts)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:length]

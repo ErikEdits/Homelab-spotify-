@@ -12,14 +12,14 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import db
+from . import db, dedup
 from . import storage as storages
 from .config import config
 from .covers import CoverStore
 from .media import probe_duration
 from .metadata import AUDIO_EXTENSIONS, TrackInfo, read_track, spotify_id_from_url
 from .storage import Storage
-from .textutil import make_id, norm, path_id
+from .textutil import dup_key, make_id, norm, path_id
 
 log = logging.getLogger("homify.scanner")
 
@@ -85,6 +85,9 @@ class Scanner:
         )
         covers = CoverStore()
         opts = scan_options()
+        dedup.backfill_keys()
+        dups = {row["path"]: row for row in db.query("SELECT * FROM duplicates")}
+        dup_seen: set[str] = set()
         existing = {
             row["path"]: row
             for row in db.query("SELECT id, path, root, size, mtime, sig, duration FROM tracks")
@@ -117,6 +120,11 @@ class Scanner:
                 count += 1
                 st_status["files"] += 1
                 path = st.display_path(rel)
+                known_dup = dups.get(path)
+                if known_dup and not full and known_dup["size"] == size and abs(known_dup["mtime"] - mtime) <= 1 \
+                        and known_dup["root"] == st.key:
+                    dup_seen.add(path)  # bekannte doppelte Datei, unverändert -> bleibt ausgeblendet
+                    continue
                 old = existing.get(path)
                 if old and opts["min_seconds"] and 0 < (old["duration"] or 0) < opts["min_seconds"] \
                         and old["size"] == size and abs(old["mtime"] - mtime) <= 1:
@@ -168,6 +176,11 @@ class Scanner:
             row for path, row in existing.items()
             if path not in seen and (row["root"] in healthy or row["root"] not in keys)
         ]
+        gone_dups = [p for p, d in dups.items()
+                     if p not in dup_seen and p not in seen and (d["root"] in healthy or d["root"] not in keys)]
+        if gone_dups:
+            with db.transaction() as c:
+                c.executemany("DELETE FROM duplicates WHERE path = ?", [(p,) for p in gone_dups])
         limit = max(3, len(existing) * opts["max_remove_percent"] // 100)
         if removed and len(removed) > limit and not full and opts["max_remove_percent"] < 100:
             # Sicherheitsgrenze: lieber nichts löschen als die halbe Bibliothek (NAS-Aussetzer o. ä.)
@@ -177,10 +190,13 @@ class Scanner:
             )
             log.warning("Sicherheitsgrenze: %s Songs würden entfernt – übersprungen", len(removed))
             removed = []
+        # Wird ein Song gelöscht, von dem es noch eine andere Datei gibt, rückt diese nach
+        replacement = {} if not removed else self._promote_duplicates(
+            [r for r in removed if not new_ids.get(r["sig"])], dups, dup_seen, all_st, opts, id_to_path, seen)
         if removed:
             with db.transaction() as c:
                 for row in removed:
-                    new_id = new_ids.get(row["sig"])
+                    new_id = new_ids.get(row["sig"]) or replacement.get(row["id"])
                     if new_id and new_id != row["id"]:
                         _remap(c, row["id"], new_id)  # Datei verschoben -> Playlists/Likes behalten
                     if id_to_path.get(row["id"]) not in (None, row["path"]):
@@ -192,7 +208,11 @@ class Scanner:
                     )
             st_status["removed"] = len(removed)
 
-        if todo or removed or full:
+        hidden = dedup.consolidate()  # jeder Song nur einmal – doppelte Dateien ausblenden
+        st_status["duplicates"] = dedup.count()
+        if hidden:
+            log.info("%s doppelte Dateien ausgeblendet", hidden)
+        if todo or removed or full or hidden:
             st_status["phase"] = "indexing"
             rebuild_aggregates()
 
@@ -209,6 +229,40 @@ class Scanner:
             except Exception:  # pragma: no cover
                 log.exception("Scan-Listener fehlgeschlagen")
         return dict(st_status)
+
+    def _promote_duplicates(self, removed_rows, dups, dup_seen, all_st, opts, id_to_path, seen) -> dict[str, str]:
+        """Song gelöscht, aber eine weitere Datei davon ist noch da -> diese kommt in die Bibliothek.
+        Gibt {alte ID: neue ID} zurück, damit Likes und Playlists erhalten bleiben."""
+        by_track: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for d in dups.values():
+            if d["path"] in dup_seen:
+                by_track[d["track_id"]].append(d)
+        if not by_track:
+            return {}
+        st_by_key = {st.key: st for st in all_st}
+        covers = CoverStore()
+        replacement: dict[str, str] = {}
+        rows = []
+        for r in removed_rows:
+            candidates = by_track.get(r["id"])
+            if not candidates:
+                continue
+            best = max(candidates, key=lambda d: dedup.quality(d["codec"], d["bitrate"]))
+            st = st_by_key.get(best["root"])
+            if st is None:
+                continue
+            info = _safe_read(st, best["rel"], opts)
+            track_id = _assign_id(st, best["rel"], best["path"], id_to_path, seen)
+            id_to_path[track_id] = best["path"]
+            cover_id = covers.store(info.cover) or covers.folder_cover(st, posixpath.dirname(best["rel"]))
+            info.cover = None
+            rows.append(_build_row(track_id, st, best["rel"], best["path"], best["size"], best["mtime"], info,
+                                   cover_id, time.time(), folder_as_album=opts["folder_as_album"]))
+            dup_seen.discard(best["path"])
+            seen.add(best["path"])
+            replacement[r["id"]] = track_id
+        self._write(rows)
+        return replacement
 
     def _write(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -229,6 +283,7 @@ class Scanner:
             for row in rows:
                 # Falls der Pfad schon unter anderer ID existiert (Kollision), alten Eintrag ersetzen
                 c.execute("DELETE FROM tracks WHERE path = ? AND id != ?", (row["path"], row["id"]))
+                c.execute("DELETE FROM duplicates WHERE path = ?", (row["path"],))
                 c.execute(sql, [row[col] for col in cols])
                 c.execute("DELETE FROM track_artists WHERE track_id = ?", (row["id"],))
                 for pos, name in enumerate(row["_artists"]):
@@ -329,6 +384,7 @@ def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, c
         "album_gain": info.album_gain,
         # Wiedererkennung verschobener Dateien – ohne Ordner/Album, die sich beim Verschieben ändern können
         "sig": make_id(title, artist, str(round(info.duration))),
+        "dkey": dup_key(title, first_artist) if info.artists else "",
         "search": norm(f"{title} {artist} {album} {album_artist}"),
         "added_at": added_at,
         "_artists": artists,
@@ -336,9 +392,7 @@ def _build_row(track_id, st: Storage, rel, path, size, mtime, info: TrackInfo, c
 
 
 def _remap(c, old_id: str, new_id: str) -> None:
-    c.execute("UPDATE OR IGNORE likes SET track_id = ? WHERE track_id = ?", (new_id, old_id))
-    c.execute("UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?", (new_id, old_id))
-    c.execute("UPDATE plays SET track_id = ? WHERE track_id = ?", (new_id, old_id))
+    dedup.remap(c, old_id, new_id)
 
 
 def rebuild_aggregates() -> None:

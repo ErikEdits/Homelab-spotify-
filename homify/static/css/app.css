@@ -700,3 +700,4 @@ svg.icon { width: 24px; height: 24px; display: block; flex: none; }
   .eq-bands { gap: 8px; }
   .eq-slider { height: 130px; }
 }
+.dup-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.06); }

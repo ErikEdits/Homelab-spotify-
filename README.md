@@ -47,6 +47,11 @@ in deine Bibliothek.
 - **Fehlt ein Song? Holen!** Name oder Spotify-Link (Song, Album, Playlist, Künstler) eingeben,
   Homify zeigt die Treffer, markiert, was du schon hast, und holt den Rest mit einem Klick.
 - **Mehrere Benutzer** mit eigenen Playlists, Lieblingssongs und Verlauf.
+- **Jeder Song nur einmal**: Alle Benutzer dürfen Songs holen – Homify prüft vorher und nachher, ob es
+  den Song schon gibt (gleicher Titel, Hauptinterpret und Länge; „Remastered“ oder „feat.“ zählen nicht,
+  „Remix“ oder „Live“ schon). Vorhandene Songs werden nicht nochmal geladen. Liegt ein Song doch doppelt
+  im Speicherort, zeigt die Bibliothek nur die beste Version; die Kopien stehen unter *Einstellungen →
+  Bibliothek & Scan* und lassen sich dort löschen. Nur in Playlists darf ein Song mehrfach vorkommen.
 - **Extras**: Genre-Mixe, Zufallsmix, Song-Radio, Autoplay, Songtexte (mitlaufend), Überblenden,
   Equalizer, Lautstärke angleichen, Sperrbildschirm-/Kopfhörer-Steuerung, Datensparmodus für
   unterwegs, tägliche Sicherung.

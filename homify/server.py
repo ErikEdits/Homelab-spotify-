@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import APP_NAME, __version__, auth, backup, db, library, media, remote, user_prefs
+from . import APP_NAME, __version__, auth, backup, db, dedup, library, media, remote, user_prefs
 from . import storage as storages
 from .config import APP_DIR, DATA_DIR, STATIC_DIR, config
 from .covers import get_cover_file
@@ -634,12 +634,14 @@ def list_downloads(user: dict = Depends(auth.current_user)):
     jobs = downloads.list()
     # Fertige Songs gleich mitliefern, damit man sie direkt abspielen kann
     for job in jobs:
-        if job["status"] in ("done", "partial") and job["spotify_ids"]:
+        if job["status"] in ("done", "partial") and (job["spotify_ids"] or job["known_ids"]):
             ids = job["spotify_ids"][:500]
             rows = db.query(
                 "SELECT id FROM tracks WHERE spotify_id IN (%s)" % ",".join("?" * len(ids)), ids
-            )
-            job["track_ids"] = [r["id"] for r in rows]
+            ) if ids else []
+            # + Songs, die schon vorher da waren (nicht doppelt geladen)
+            known = [r["id"] for r in library.get_track_rows(job["known_ids"][:500])] if job["known_ids"] else []
+            job["track_ids"] = list(dict.fromkeys([r["id"] for r in rows] + known))
             if job["track_ids"] and not job.get("auto_liked") and not scanner.status.get("running"):
                 _auto_like(job)
         if not user["is_admin"] and job.get("user_id") != user["id"]:
@@ -769,6 +771,7 @@ def get_settings(user: dict = Depends(auth.admin_user)):
             "restart_needed": restart_needed(),
             "loudness": {**analyzer.status, "remaining": analyzer.remaining()},
             "backups": backup.list_backups(),
+            "duplicates": dedup.count(),
         },
     }
 
@@ -970,6 +973,38 @@ async def restore(request: Request, keep_storage: bool = True, user: dict = Depe
 def scan(full: bool = False, user: dict = Depends(auth.admin_user)):
     scanner.start(full=full)
     return scanner.status
+
+
+# Doppelte Dateien: ausgeblendet, der Admin kann sie löschen, um Platz auf dem NAS zu sparen
+@app.get("/api/duplicates")
+def list_duplicates(user: dict = Depends(auth.admin_user)):
+    return {"count": dedup.count(), "items": dedup.list_all()}
+
+
+class DuplicatePaths(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=5000)
+    all: bool = False
+
+
+@app.post("/api/duplicates/delete")
+def delete_duplicates(body: DuplicatePaths, user: dict = Depends(auth.admin_user)):
+    if body.all:
+        rows = db.query("SELECT path, root, rel FROM duplicates")
+    else:
+        rows = [r for p in body.paths if (r := db.query_one("SELECT path, root, rel FROM duplicates WHERE path = ?", (p,)))]
+    by_key = {st.key: st for st in storages.all_storages()}
+    deleted, errors = 0, []
+    for r in rows:
+        st = by_key.get(r["root"])
+        try:
+            if st is None:
+                raise OSError("Speicherort nicht eingebunden")
+            st.remove(r["rel"])  # nur Dateien aus der Duplikat-Liste – nie die behaltene Version
+            db.execute("DELETE FROM duplicates WHERE path = ?", (r["path"],))
+            deleted += 1
+        except Exception as exc:  # z. B. SMB-Fehler vom NAS
+            errors.append(f"{r['path']}: {exc}")
+    return {"deleted": deleted, "errors": errors[:20], "count": dedup.count()}
 
 
 @app.post("/api/system/spotdl")

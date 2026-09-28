@@ -14,11 +14,13 @@ import threading
 import time
 from typing import Any
 
-from . import db
+from . import db, dedup
 from . import storage as storages
 from .config import DATA_DIR, IS_WINDOWS, config
 from .media import find_ffmpeg
+from .metadata import AUDIO_EXTENSIONS, read_track, spotify_id_from_url
 from .scanner import scanner
+from .textutil import dup_key
 from .tools import child_env, venv_python
 
 log = logging.getLogger("homify.downloader")
@@ -118,24 +120,79 @@ def library_spotify_ids() -> set[str]:
     return {r["spotify_id"] for r in db.query("SELECT spotify_id FROM tracks WHERE spotify_id != ''")}
 
 
-def move_to_library(staging: str) -> tuple[int, list[str]]:
-    """Fertige Downloads aus dem Zwischenordner in den Speicherort (App-Ordner/NAS) verschieben."""
+def spotify_track_url(spotify_id: str) -> str:
+    return f"https://open.spotify.com/track/{spotify_id}"
+
+
+def resolve_tracks(query: str) -> list[dict[str, Any]]:
+    """Songs eines Spotify-Links (Song/Album/Playlist) mit Abgleich zur Bibliothek – leer, wenn nicht möglich."""
+    if not re.match(r"https?://open\.spotify\.com/(intl-\w+/)?(track|album|playlist)/", query):
+        return []
+    try:
+        from .spotify import search
+        res = search(query)
+        return list(res.get("item", {}).get("tracks") or []) if res.get("mode") == "link" else []
+    except Exception as exc:  # spotDL/Internet nicht verfügbar -> ohne Vorabprüfung weiter
+        log.info("Vorabprüfung für %s nicht möglich: %s", query, exc)
+        return []
+
+
+def move_to_library(staging: str) -> dict[str, Any]:
+    """Fertige Downloads aus dem Zwischenordner in den Speicherort (App-Ordner/NAS) verschieben.
+    Songs, die es in der Bibliothek schon gibt, werden verworfen – jeder Song nur einmal."""
     target = storages.primary()
-    moved, errors = 0, []
-    for rel, _size, _mtime in storages.LocalStorage(staging).walk():
-        if rel.endswith((".part", ".temp", ".tmp")) or os.path.basename(rel).startswith("."):
-            continue
+    result: dict[str, Any] = {"moved": 0, "duplicates": 0, "errors": [], "known_ids": []}
+    files = [rel for rel, _size, _mtime in storages.LocalStorage(staging).walk()
+             if not rel.endswith((".part", ".temp", ".tmp")) and not os.path.basename(rel).startswith(".")]
+    audio = [rel for rel in files if os.path.splitext(rel)[1].lower() in AUDIO_EXTENSIONS]
+    dropped: set[str] = set()
+    fresh: list[tuple[str, float]] = []  # in diesem Download schon gespeichert (z. B. Song doppelt in Playlist)
+    for rel in audio:
         local = os.path.join(staging, *rel.split("/"))
         try:
-            if target.exists(rel):
-                os.remove(local)  # gibt es schon – nicht überschreiben
-            else:
-                target.put(local, rel, move=True)
-            moved += 1
+            try:
+                info = read_track(local)
+            except Exception:  # unlesbare Tags -> kein Abgleich möglich, Datei trotzdem speichern
+                info = None
+            artist = info.artists[0] if info and info.artists else ""
+            existing = dedup.find_track(info.title, artist, info.duration, spotify_id_from_url(info.source_url),
+                                        info.isrc) if artist else None
+            key = dup_key(info.title, artist) if artist else ""
+            twice = key and any(k == key and dedup.same_length(d, info.duration) for k, d in fresh)
+            if existing or twice or target.exists(rel):
+                os.remove(local)  # gibt es schon -> nicht doppelt speichern
+                dropped.add(os.path.splitext(rel)[0])
+                result["duplicates"] += 1
+                if existing:
+                    result["known_ids"].append(existing)
+                continue
+            target.put(local, rel, move=True)
+            result["moved"] += 1
+            if key:
+                fresh.append((key, info.duration))
         except Exception as exc:
-            errors.append(f"{rel}: {exc}")
+            result["errors"].append(f"{rel}: {exc}")
             log.warning("Konnte %s nicht in die Bibliothek verschieben: %s", rel, exc)
-    return moved, errors
+    for rel in files:
+        if rel in audio or os.path.splitext(rel)[0] in dropped:
+            continue  # Songtext (.lrc) eines verworfenen Songs gleich mit weg
+        local = os.path.join(staging, *rel.split("/"))
+        try:
+            if not target.exists(rel):
+                target.put(local, rel, move=True)
+        except Exception as exc:
+            log.warning("Konnte %s nicht speichern: %s", rel, exc)
+    return result
+
+
+def summary(new: int, skipped: int) -> str:
+    songs = lambda n: f"{n} Song{'s' if n != 1 else ''}"  # noqa: E731
+    if new and skipped:
+        return f"{songs(new)} gespeichert, {skipped} {'war' if skipped == 1 else 'waren'} schon da"
+    if skipped:
+        return "Schon in deiner Bibliothek – nichts doppelt gespeichert" if skipped == 1 \
+            else f"Alle {skipped} Songs sind schon in deiner Bibliothek"
+    return f"{songs(new)} gespeichert"
 
 
 DEFAULT_TEMPLATE = "{album-artist}/{album}/{artists} - {title}.{output-ext}"
@@ -144,6 +201,7 @@ DEFAULT_TEMPLATE = "{album-artist}/{album}/{artists} - {title}.{output-ext}"
 def _row_to_job(row: dict[str, Any]) -> dict[str, Any]:
     job = dict(row)
     job["spotify_ids"] = json.loads(job.get("spotify_ids") or "[]")
+    job["known_ids"] = json.loads(job.get("known_ids") or "[]")
     job["log"] = (job.get("log") or "").splitlines()[-200:]
     return job
 
@@ -301,10 +359,28 @@ class DownloadManager:
         staging.mkdir(parents=True, exist_ok=True)
         owned = library_spotify_ids()
         wanted = set(json.loads(job.get("spotify_ids") or "[]"))
-        already = len(wanted & owned)  # schon vorhanden -> spotDL überspringt sie (Archiv)
+        # Vorabprüfung: welche Songs gibt es schon (auch als eigene Datei ohne Spotify-Kennung)?
+        known: dict[str, str] = {}
+        for t in resolve_tracks(job["query"]):
+            if t.get("id") and t.get("library_id"):
+                known[t["id"]] = t["library_id"]
+            if t.get("id"):
+                wanted.add(t["id"])
+        skip = owned | set(known)
+        known_ids = list(dict.fromkeys(known.values()))
+        if wanted and wanted <= skip:
+            shutil.rmtree(staging, ignore_errors=True)
+            db.execute(
+                "UPDATE downloads SET status = 'done', message = ?, done = ?, total = ?, failed = 0, known_ids = ?, "
+                "started_at = ?, finished_at = ? WHERE id = ?",
+                (summary(0, len(wanted)), len(wanted), len(wanted), json.dumps(known_ids), time.time(), time.time(),
+                 job_id),
+            )
+            log.info("Download %s: alles schon vorhanden", job_id)
+            return
+        already = len(wanted & skip)  # schon vorhanden -> spotDL überspringt sie (Archiv)
         archive = staging.parent / f"job-{job_id}.archive"
-        archive.write_text("".join(f"https://open.spotify.com/track/{sid}\n" for sid in sorted(owned)),
-                           encoding="utf-8")
+        archive.write_text("".join(spotify_track_url(sid) + "\n" for sid in sorted(skip)), encoding="utf-8")
         cmd = build_command(job["query"], staging=str(staging), archive=str(archive))
         workdir = DATA_DIR / "tmp" / "spotdl"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -356,21 +432,25 @@ class DownloadManager:
             cancelled = job_id in self._cancel
             self._cancel.discard(job_id)
 
-        moved, move_errors = move_to_library(str(staging))
+        moved = move_to_library(str(staging))
         shutil.rmtree(staging, ignore_errors=True)
         archive.unlink(missing_ok=True)
-        if move_errors:
-            errors.append("Speichern fehlgeschlagen: " + move_errors[-1])
-            done = min(done, moved)
-        done += already
+        new = moved["moved"]
+        available = new + moved["duplicates"] + already
+        if moved["errors"]:
+            errors.append("Speichern fehlgeschlagen: " + moved["errors"][-1])
+            done = available  # spotDL-Ausgabe zählt nicht, wenn das Speichern scheiterte
+        done = max(done, available)
+        known_ids = list(dict.fromkeys(known_ids + moved["known_ids"]))
         total = max(total, done)
         failed = max(total - done, 0)
+        skipped = done - new
         if cancelled:
             status, message = "cancelled", "Abgebrochen"
         elif done > 0 and failed == 0:
-            status, message = "done", f"{done} Song{'s' if done != 1 else ''} gespeichert"
+            status, message = "done", summary(new, skipped)
         elif done > 0:
-            status, message = "partial", f"{done} von {total} Songs gespeichert, {failed} nicht gefunden"
+            status, message = "partial", f"{summary(new, skipped)}, {failed} nicht gefunden"
             if errors:
                 message = f"{message} – {friendly_error(errors[-1])}"[:500]
         else:
@@ -383,10 +463,10 @@ class DownloadManager:
         if status in ("error", "partial") and attempts <= retries and not cancelled:
             # Automatisch noch einmal versuchen (z. B. YouTube-Aussetzer)
             db.execute(
-                "UPDATE downloads SET status = 'queued', attempts = ?, message = ?, log = ?, done = ?, total = ? "
-                "WHERE id = ?",
+                "UPDATE downloads SET status = 'queued', attempts = ?, message = ?, log = ?, done = ?, total = ?, "
+                "known_ids = ? WHERE id = ?",
                 (attempts, f"Neuer Versuch ({attempts}/{retries}) – {message}"[:500], "\n".join(lines[-300:]),
-                 done, total, job_id),
+                 done, total, json.dumps(known_ids), job_id),
             )
             log.info("Download %s wird wiederholt (%s/%s)", job_id, attempts, retries)
             if done > 0:
@@ -394,8 +474,9 @@ class DownloadManager:
             return
         db.execute(
             "UPDATE downloads SET status = ?, message = ?, done = ?, failed = ?, total = ?, log = ?, finished_at = ?, "
-            "attempts = ? WHERE id = ?",
-            (status, message, done, failed, total, "\n".join(lines[-300:]), time.time(), attempts, job_id),
+            "attempts = ?, known_ids = ? WHERE id = ?",
+            (status, message, done, failed, total, "\n".join(lines[-300:]), time.time(), attempts,
+             json.dumps(known_ids), job_id),
         )
         log.info("Download %s: %s (%s)", job_id, status, message)
         if done > 0:

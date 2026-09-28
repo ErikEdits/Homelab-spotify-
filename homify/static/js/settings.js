@@ -325,7 +325,16 @@ function libraryExtras(sys, s) {
   if (sys.scan.running) setTimeout(poll, 500);
 
   const dirs = h("textarea", { rows: "2", placeholder: "D:\\Alte Musik\n/mnt/usb/musik" }, (s.music_dirs || []).join("\n"));
-  const top = extra(scanInfo,
+  const dupInfo = h("div", { class: "notice", hidden: !sys.duplicates, style: { alignItems: "center" } });
+  const drawDups = (n) => {
+    dupInfo.hidden = !n;
+    dupInfo.replaceChildren(icon("info"), h("div", { class: "grow" },
+      h("strong", {}, `${plural(n, "doppelte Datei", "doppelte Dateien")} ausgeblendet. `),
+      "Jeder Song erscheint nur einmal – behalten wird die beste Version. Die anderen Dateien liegen noch im Speicherort."),
+      h("button", { class: "btn btn-small btn-outline", onclick: async () => drawDups(await duplicatesDialog()) }, "Anzeigen"));
+  };
+  drawDups(sys.duplicates || 0);
+  const top = extra(scanInfo, dupInfo,
     h("div", { class: "row-actions", style: { marginBottom: "12px" } },
       h("button", { class: "btn btn-small btn-outline", onclick: async () => { drawScan(await api("/library/scan", { method: "POST" })); poll(); } }, icon("refresh", "sm"), "Jetzt scannen"),
       h("button", { class: "btn btn-small btn-outline", onclick: async () => { drawScan(await api("/library/scan?full=true", { method: "POST" })); poll(); } }, "Alles neu einlesen")));
@@ -346,6 +355,45 @@ function libraryExtras(sys, s) {
         } catch (e) { toast(e.message, { error: true }); }
       } }, "Ordner speichern"))));
   return { top, bottom, destroy: () => clearTimeout(timer) };
+}
+
+/** Liste der ausgeblendeten doppelten Dateien – einzeln oder alle löschen. Gibt die neue Anzahl zurück. */
+async function duplicatesDialog() {
+  let data = await api("/duplicates");
+  const list = h("div", { style: { maxHeight: "55vh", overflow: "auto" } });
+  const fmtQ = (codec, bitrate) => [String(codec || "?").toUpperCase(), bitrate ? `${Math.round(bitrate / 1000)} kbit/s` : null].filter(Boolean).join(" ");
+  const remove = async (body) => {
+    const r = await api("/duplicates/delete", { method: "POST", body });
+    if (r.errors.length) toast(`Nicht alles gelöscht: ${r.errors[0]}`, { error: true, ms: 6000 });
+    else toast(`${plural(r.deleted, "Datei", "Dateien")} gelöscht`);
+    data = await api("/duplicates");
+    draw();
+  };
+  const draw = () => {
+    clear(list);
+    if (!data.items.length) { list.append(h("p", { class: "muted" }, "Keine doppelten Dateien.")); return; }
+    for (const d of data.items) {
+      list.append(h("div", { class: "dup-row" },
+        h("div", { style: { minWidth: 0, flex: 1 } },
+          h("div", { class: "ellipsis" }, h("strong", {}, d.title), ` · ${d.artist}`),
+          h("div", { class: "muted ellipsis", style: { fontSize: "12px" }, title: d.path }, `Doppelt: ${d.rel || d.path} (${fmtQ(d.codec, d.bitrate)})`),
+          h("div", { class: "muted ellipsis", style: { fontSize: "12px" }, title: d.kept_path || "" }, `Behalten: ${d.kept_rel || d.kept_path || "–"} (${fmtQ(d.kept_codec, d.kept_bitrate)})`)),
+        h("button", { class: "icon-btn", title: "Diese doppelte Datei löschen", "aria-label": "Löschen", onclick: async () => {
+          if (await confirmDialog("Doppelte Datei löschen?", `${d.path} wird vom Speicherort gelöscht. Die behaltene Version bleibt.`, { okLabel: "Löschen", danger: true })) remove({ paths: [d.path] });
+        } }, icon("trash"))));
+    }
+  };
+  draw();
+  await modal("Doppelte Dateien", h("div", {},
+    h("p", { class: "muted", style: { fontSize: "13px", marginTop: 0 } }, "Diese Dateien sind Kopien von Songs, die schon in der Bibliothek sind (gleicher Titel, Interpret und Länge). Sie werden nicht angezeigt. Löschen spart Platz – die behaltene Version bleibt immer erhalten."),
+    list), [
+    { label: "Alle doppelten löschen", danger: true, action: async () => {
+      if (await confirmDialog("Alle doppelten Dateien löschen?", `${plural(data.count, "Datei wird", "Dateien werden")} vom Speicherort gelöscht. Die behaltenen Versionen bleiben.`, { okLabel: "Alle löschen", danger: true })) await remove({ all: true });
+      return false;
+    } },
+    { label: "Schließen", primary: true, value: true },
+  ]);
+  return data.count;
 }
 
 // ================================================================ spotDL (Admin)

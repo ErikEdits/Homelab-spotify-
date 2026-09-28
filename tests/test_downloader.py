@@ -40,11 +40,11 @@ FAKE_SPOTDL = textwrap.dedent('''
     import os, sys
     staging = sys.argv[1]
     os.makedirs(os.path.join(staging, "Daft Punk", "Fake Album"), exist_ok=True)
-    with open(os.path.join(staging, "Daft Punk", "Fake Album", "Daft Punk - One More Time.mp3"), "wb") as f:
+    with open(os.path.join(staging, "Daft Punk", "Fake Album", "Daft Punk - Harder Better.mp3"), "wb") as f:
         f.write(b"ID3" + b"x" * 100)
     print("Processing query: https://open.spotify.com/album/x")
     print("Found 3 songs in Discovery (Album)")
-    print('Downloaded "Daft Punk - One More Time": https://music.youtube.com/watch?v=1')
+    print('Downloaded "Daft Punk - Harder Better": https://music.youtube.com/watch?v=1')
     print("Skipping Daft Punk - Aerodynamic (file already exists) ")
     print("LookupError: No results found for song: Daft Punk - Digital Love")
     sys.exit(0)
@@ -79,7 +79,7 @@ def test_job_progress_parsing(scanned, tmp_path, monkeypatch, music_dir):
     assert done["done"] == 2 and done["total"] == 3 and done["failed"] == 1
     assert "YouTube Music" in done["message"]
     # Datei wurde aus dem Zwischenordner in den Speicherort verschoben
-    moved = music_dir / "Daft Punk" / "Fake Album" / "Daft Punk - One More Time.mp3"
+    moved = music_dir / "Daft Punk" / "Fake Album" / "Daft Punk - Harder Better.mp3"
     assert moved.exists()
     moved.unlink()
     moved.parent.rmdir()
@@ -108,6 +108,7 @@ def test_daily_download_limit(scanned, monkeypatch):
     from homify.config import config
 
     uid = auth.create_user("limitiert", "limit1234")
+    db.execute("DELETE FROM downloads WHERE user_id = ?", (uid,))  # Reste anderer Tests (gleiche ID möglich)
     monkeypatch.setitem(config._data, "daily_download_limit", 2)
     mgr = DownloadManager()
     mgr.add(uid, "Künstler - Song 1")
@@ -121,3 +122,51 @@ def test_build_command_uses_staging_and_archive(scanned, tmp_path):
     cmd = build_command("https://open.spotify.com/track/abc", staging=str(tmp_path), archive="a.txt")
     assert cmd[cmd.index("--output") + 1].startswith(str(tmp_path))
     assert cmd[cmd.index("--archive") + 1] == "a.txt"
+
+
+FAKE_DUPLICATE = textwrap.dedent('''
+    import os, shutil, sys
+    staging, src = sys.argv[1], sys.argv[2]
+    os.makedirs(os.path.join(staging, "Daft Punk", "Anderes Album"), exist_ok=True)
+    # Derselbe Song wie in der Bibliothek, nur „Remastered“ und woanders abgelegt – plus Songtext
+    shutil.copy(src, os.path.join(staging, "Daft Punk", "Anderes Album", "Daft Punk - One More Time.mp3"))
+    open(os.path.join(staging, "Daft Punk", "Anderes Album", "Daft Punk - One More Time.lrc"), "w").write("[00:01.00]x")
+    print('Downloaded "Daft Punk - One More Time (Remastered)": https://music.youtube.com/watch?v=2')
+''')
+
+
+def test_download_of_existing_song_is_not_saved_twice(scanned, tmp_path, monkeypatch, music_dir):
+    fake = tmp_path / "fake_dup.py"
+    fake.write_text(FAKE_DUPLICATE, encoding="utf-8")
+    src = music_dir / "Daft Punk" / "Discovery" / "01 One More Time.mp3"
+    monkeypatch.setattr(downloader, "build_command", lambda q, staging=None, archive=None: [sys.executable, str(fake), staging, str(src)])
+    monkeypatch.setattr(downloader, "venv_python", lambda: type("P", (), {"exists": lambda self: True})())
+    monkeypatch.setattr(downloader.scanner, "start", lambda *a, **k: True)
+    before = db.query_one("SELECT COUNT(*) AS n FROM tracks")["n"]
+    mgr = DownloadManager()
+    job = mgr.add(1, "Daft Punk - One More Time", kind="search")
+    mgr._run(db.query_one("SELECT * FROM downloads WHERE id = ?", (job["id"],)))
+    done = mgr.get(job["id"])
+    assert done["status"] == "done"
+    assert "schon" in done["message"].lower()
+    existing = db.query_one("SELECT id FROM tracks WHERE title = 'One More Time'")["id"]
+    assert done["known_ids"] == [existing]
+    assert not (music_dir / "Daft Punk" / "Anderes Album").exists()  # weder Song noch Songtext gespeichert
+    assert db.query_one("SELECT COUNT(*) AS n FROM tracks")["n"] == before
+    db.execute("DELETE FROM downloads WHERE id = ?", (job["id"],))
+
+
+def test_everything_known_skips_spotdl(scanned, monkeypatch):
+    tid = db.query_one("SELECT id FROM tracks WHERE title = 'Aerodynamic'")["id"]
+    monkeypatch.setattr(downloader, "resolve_tracks", lambda q: [{"id": "spX1", "library_id": tid}])
+    monkeypatch.setattr(downloader, "venv_python", lambda: type("P", (), {"exists": lambda self: True})())
+    called = []
+    monkeypatch.setattr(downloader, "build_command", lambda *a, **k: called.append(1) or ["false"])
+    mgr = DownloadManager()
+    job = mgr.add(1, "https://open.spotify.com/track/spX1", kind="track", spotify_ids=["spX1"])
+    mgr._run(db.query_one("SELECT * FROM downloads WHERE id = ?", (job["id"],)))
+    done = mgr.get(job["id"])
+    assert not called
+    assert done["status"] == "done" and done["known_ids"] == [tid]
+    assert "schon in deiner bibliothek" in done["message"].lower()
+    db.execute("DELETE FROM downloads WHERE id = ?", (job["id"],))

@@ -20,7 +20,8 @@ export async function refreshDownloads() {
     for (const job of data.jobs) {
       const prev = known.get(job.id);
       if (prev && prev !== job.status && ["done", "partial"].includes(job.status)) {
-        toast(`„${job.title}“ ist jetzt in deiner Bibliothek`);
+        // „Schon in deiner Bibliothek“: nichts wurde doppelt gespeichert
+        toast(/^(Schon|Alle \d+ Songs sind schon)/.test(job.message || "") ? `„${job.title}“: ${job.message}` : `„${job.title}“ ist jetzt in deiner Bibliothek`);
         emit("library-changed");
       } else if (prev && prev !== job.status && job.status === "error") {
         toast(`Download fehlgeschlagen: ${job.title}`, { error: true });

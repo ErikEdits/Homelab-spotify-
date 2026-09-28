@@ -40,9 +40,28 @@ CREATE TABLE IF NOT EXISTS tracks (
     gain         REAL,
     album_gain   REAL,
     sig          TEXT NOT NULL DEFAULT '',
+    dkey         TEXT NOT NULL DEFAULT '',
     search       TEXT NOT NULL DEFAULT '',
     added_at     REAL NOT NULL DEFAULT 0
 );
+
+-- Doppelte Dateien desselben Songs: nicht in der Bibliothek, nur hier vermerkt (Datei bleibt liegen)
+CREATE TABLE IF NOT EXISTS duplicates (
+    path     TEXT PRIMARY KEY,
+    root     TEXT NOT NULL,
+    rel      TEXT NOT NULL,
+    size     INTEGER NOT NULL DEFAULT 0,
+    mtime    REAL NOT NULL DEFAULT 0,
+    track_id TEXT NOT NULL,
+    title    TEXT NOT NULL DEFAULT '',
+    artist   TEXT NOT NULL DEFAULT '',
+    album    TEXT NOT NULL DEFAULT '',
+    codec    TEXT NOT NULL DEFAULT '',
+    bitrate  INTEGER NOT NULL DEFAULT 0,
+    duration REAL NOT NULL DEFAULT 0,
+    found_at REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_duplicates_track ON duplicates(track_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_spotify ON tracks(spotify_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks(isrc);
@@ -163,6 +182,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     spotify_ids TEXT NOT NULL DEFAULT '[]',
     attempts    INTEGER NOT NULL DEFAULT 0,
     auto_liked  INTEGER NOT NULL DEFAULT 0,
+    known_ids   TEXT NOT NULL DEFAULT '[]',
     created_at  REAL NOT NULL,
     started_at  REAL,
     finished_at REAL
@@ -196,14 +216,17 @@ def init() -> None:
     c.executescript(SCHEMA)
     # Spätere Spalten in bestehenden Datenbanken nachrüsten
     added = {
-        "tracks": [("rel", "TEXT NOT NULL DEFAULT ''"), ("gain", "REAL"), ("album_gain", "REAL")],
-        "downloads": [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("auto_liked", "INTEGER NOT NULL DEFAULT 0")],
+        "tracks": [("rel", "TEXT NOT NULL DEFAULT ''"), ("gain", "REAL"), ("album_gain", "REAL"),
+                   ("dkey", "TEXT NOT NULL DEFAULT ''")],
+        "downloads": [("attempts", "INTEGER NOT NULL DEFAULT 0"), ("auto_liked", "INTEGER NOT NULL DEFAULT 0"),
+                      ("known_ids", "TEXT NOT NULL DEFAULT '[]'")],
     }
     for table, cols in added.items():
         existing = {row[1] for row in c.execute(f"PRAGMA table_info({table})")}
         for name, ddl in cols:
             if name not in existing:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tracks_dkey ON tracks(dkey)")
 
 
 @contextmanager

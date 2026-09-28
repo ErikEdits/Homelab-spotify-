@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import re
 import threading
 import time
 from typing import Any
 
 from . import db
-from .textutil import match_key
+from .dedup import same_length
+from .textutil import dup_key
 from .tools import bridge
 
 SPOTIFY_URL = re.compile(r"https?://(open\.spotify\.com|spotify\.link)/\S+", re.IGNORECASE)
@@ -32,29 +32,32 @@ def _library_index() -> dict[str, Any]:
     with _index_lock:
         if _index["version"] == library_version["value"]:
             return _index
-        by_key, by_spotify, by_isrc = {}, {}, {}
-        for row in db.query("SELECT id, title, artists, spotify_id, isrc FROM tracks"):
+        by_key: dict[str, list[tuple[str, float]]] = {}
+        by_spotify, by_isrc = {}, {}
+        for row in db.query("SELECT id, spotify_id, isrc, dkey, duration FROM tracks"):
             if row["spotify_id"]:
                 by_spotify[row["spotify_id"]] = row["id"]
             if row["isrc"]:
                 by_isrc[row["isrc"]] = row["id"]
-            try:
-                first_artist = (json.loads(row["artists"]) or [""])[0]
-            except ValueError:
-                first_artist = ""
-            by_key[match_key(row["title"]) + "|" + match_key(first_artist)] = row["id"]
+            if row["dkey"]:
+                by_key.setdefault(row["dkey"], []).append((row["id"], row["duration"]))
         _index.update(version=library_version["value"], by_key=by_key, by_spotify=by_spotify, by_isrc=by_isrc)
         return _index
 
 
 def find_in_library(track: dict) -> str | None:
+    """Gleiche Regel wie beim Einlesen: gleicher Song = Titel + Hauptinterpret + fast gleiche Länge."""
     idx = _library_index()
     if track.get("id") in idx["by_spotify"]:
         return idx["by_spotify"][track["id"]]
     if track.get("isrc") and track["isrc"] in idx["by_isrc"]:
         return idx["by_isrc"][track["isrc"]]
     artists = track.get("artists") or [""]
-    return idx["by_key"].get(match_key(track.get("name")) + "|" + match_key(artists[0]))
+    duration = (track.get("duration_ms") or 0) / 1000
+    for track_id, length in idx["by_key"].get(dup_key(track.get("name"), artists[0]), []):
+        if same_length(duration, length):
+            return track_id
+    return None
 
 
 def _mark(tracks: list[dict]) -> list[dict]:
