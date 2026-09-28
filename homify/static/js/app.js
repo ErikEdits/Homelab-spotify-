@@ -7,7 +7,7 @@ import { player } from "./player.js";
 import { searchView } from "./search.js";
 import { appsView, settingsView } from "./settings.js";
 import {
-  clear, closeMenu, cover, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, plural, toast,
+  clear, closeMenu, cover, coverUrl, fmtTime, h, hydrateIcons, icon, logoSvg, makeSlider, mosaic, openMenu, plural, toast,
 } from "./ui.js";
 import {
   albumView, artistView, createPlaylist, emptyState, homeView, libraryView, likedView, mixView, playlistView,
@@ -72,6 +72,7 @@ function startApp() {
   $("app").hidden = false;
   setupPlayerBar();
   setupShell();
+  setupNativeBridge();
   loadPlaylists().then(renderSidebar).catch(() => {});
   refreshDownloads();
   player.restore();
@@ -430,6 +431,38 @@ function renderFullPlayer() {
   fp.ontouchend = (e) => {
     if (startY !== null && e.changedTouches[0].clientY - startY > 120 && !e.target.closest(".slider")) close();
     startY = null;
+  };
+}
+
+// ================================================================ Android- und Windows-App
+// Meldet Titel/Cover/Status an die App (Android: Benachrichtigung, Sperrbildschirm, Bluetooth;
+// Windows: Taskleisten-Knöpfe) und nimmt deren Befehle über window.homifyNative entgegen.
+function setupNativeBridge() {
+  const native = window.HomifyAndroid || window.homifyDesktop;
+  if (!native) return;
+  document.documentElement.classList.add("in-app");
+  let lastPush = 0;
+  const push = () => {
+    lastPush = Date.now();
+    const t = player.current;
+    const payload = t ? {
+      title: t.title, artist: t.artist, album: t.album,
+      artwork: t.cover ? new URL(coverUrl(t.cover, 640), location.href).href : "",
+      playing: player.playing, position: player.audio.currentTime || 0,
+      duration: player.time().duration || t.duration || 0,
+    } : { title: "" };
+    try { native.updateState(JSON.stringify(payload)); } catch { /* App zu alt */ }
+  };
+  on("track", push);
+  on("state", push);
+  on("time", () => { if (Date.now() - lastPush > 15000) push(); });
+  player.audio.addEventListener("seeked", push);
+  window.homifyNative = (cmd, arg) => {
+    if (cmd === "play") player.play();
+    else if (cmd === "pause") player.pause();
+    else if (cmd === "next") player.next();
+    else if (cmd === "prev") player.prev();
+    else if (cmd === "seek") player.seek((arg || 0) / 1000);
   };
 }
 

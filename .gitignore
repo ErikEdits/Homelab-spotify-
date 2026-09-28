@@ -14,3 +14,11 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Apps (Build-Ergebnisse)
+desktop/node_modules/
+desktop/dist/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

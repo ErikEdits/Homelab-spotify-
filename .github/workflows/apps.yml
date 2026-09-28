@@ -1,0 +1,136 @@
+# Baut die Android-App (APK) und die Windows-App (Installer) und stellt sie unter
+# „Releases“ zum Herunterladen bereit:
+#   https://github.com/ErikEdits/Homelab-spotify-/releases/latest
+name: Apps bauen
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:
+      - "android/**"
+      - "desktop/**"
+      - ".github/workflows/apps.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android-App (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Eigenen Signaturschlüssel verwenden (falls als Secret hinterlegt)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/homify.keystore"
+            echo "HOMIFY_KEYSTORE=$RUNNER_TEMP/homify.keystore" >> "$GITHUB_ENV"
+            echo "Eigener Schlüssel wird verwendet."
+          else
+            echo "Mitgelieferter Homelab-Schlüssel wird verwendet."
+          fi
+
+      - name: APK bauen
+        working-directory: android
+        env:
+          HOMIFY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HOMIFY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HOMIFY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Leere Secrets nicht als Passwort verwenden
+          for v in HOMIFY_KEYSTORE_PASSWORD HOMIFY_KEY_ALIAS HOMIFY_KEY_PASSWORD; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          gradle assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk ../Homify.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Homify-Android
+          path: Homify.apk
+          if-no-files-found: error
+
+  windows:
+    name: Windows-App (Installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Abhängigkeiten
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Installer bauen
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --win nsis --publish never -c.extraMetadata.version=1.0.${{ github.run_number }}
+
+      - name: Installer einsammeln
+        shell: bash
+        run: cp desktop/dist/Homify-Setup.exe Homify-Setup.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Homify-Windows
+          path: Homify-Setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Downloads veröffentlichen
+    needs: [android, windows]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Tag „apps-latest“ auf diesen Stand setzen
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          git tag -f apps-latest "$GITHUB_SHA"
+          git push -f origin apps-latest
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'apps-latest' }}
+          name: Homify-Apps (Build ${{ github.run_number }})
+          make_latest: "true"
+          files: |
+            out/Homify.apk
+            out/Homify-Setup.exe
+          body: |
+            **Homify-Apps** – automatisch gebaut aus `${{ github.ref_name }}` (${{ github.sha }}).
+
+            - **Android:** `Homify.apk` auf dem Handy öffnen und installieren („Installation aus dieser Quelle zulassen“).
+            - **Windows:** `Homify-Setup.exe` starten. Warnt Windows („Unbekannter Herausgeber“): *Weitere Informationen → Trotzdem ausführen*.
+
+            Beim ersten Start die Server-Adresse eintragen (steht in Homify unter *Einstellungen → Apps*).
