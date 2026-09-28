@@ -3,18 +3,14 @@
 import io
 import json
 
-from homify.spotdl_run import FALLBACK_NOTICE, GIVE_UP_AFTER, install_youtube_fallback
+from homify.spotdl_run import FALLBACK_NOTICE, GIVE_UP_AFTER, YouTubeFallback, youtube_search
 
 
-class FakeYouTube:
-    created = 0
-
-    def __init__(self, output_format, cookie_file, search_query, filter_results):
-        FakeYouTube.created += 1
-        self.cookie_file = cookie_file
-
-    def get_results(self, search_term):
-        return [f"yt:{search_term}:{self.cookie_file}"]
+def fake_search(calls):
+    def search(term, cookie_file):
+        calls.append(term)
+        return [f"yt:{term}:{cookie_file}"]
+    return search
 
 
 def make_ytmusic(fail: bool):
@@ -22,8 +18,7 @@ def make_ytmusic(fail: bool):
         calls = 0
 
         def __init__(self):
-            self.output_format, self.cookie_file = "opus", "cookies.txt"
-            self.search_query, self.filter_results = None, True
+            self.cookie_file = "cookies.txt"
 
         def get_results(self, search_term, log_search_failures=True, **kwargs):
             type(self).calls += 1
@@ -35,18 +30,19 @@ def make_ytmusic(fail: bool):
 
 
 def test_working_youtube_music_is_untouched():
-    cls = make_ytmusic(fail=False)
-    out = io.StringIO()
-    install_youtube_fallback(cls, FakeYouTube, out)
+    cls, out, calls = make_ytmusic(fail=False), io.StringIO(), []
+    fb = YouTubeFallback(fake_search(calls), out)
+    fb.install(cls)
     assert cls().get_results("Maroon 5 - Animals", filter="songs") == ["ytm:Maroon 5 - Animals"]
-    assert out.getvalue() == ""
+    assert fb.connection_check(cls)() is True
+    assert out.getvalue() == "" and calls == []
 
 
 def test_failing_youtube_music_falls_back_to_youtube_with_cookies():
-    cls = make_ytmusic(fail=True)
-    out = io.StringIO()
-    install_youtube_fallback(cls, FakeYouTube, out)
-    install_youtube_fallback(cls, FakeYouTube, out)  # zweimal installieren schadet nicht
+    cls, out, calls = make_ytmusic(fail=True), io.StringIO(), []
+    fb = YouTubeFallback(fake_search(calls), out)
+    fb.install(cls)
+    fb.install(cls)  # zweimal installieren schadet nicht
     provider = cls()
     assert provider.get_results("Maroon 5 - Animals", filter="songs") == ["yt:Maroon 5 - Animals:cookies.txt"]
     assert out.getvalue().strip() == FALLBACK_NOTICE.format("JSONDecodeError")  # nur einmal gemeldet
@@ -56,3 +52,31 @@ def test_failing_youtube_music_falls_back_to_youtube_with_cookies():
         provider.get_results(f"Song {i}")
     assert cls.calls == GIVE_UP_AFTER
     assert out.getvalue().count("Homify-Hinweis") == 1
+
+
+def test_connection_check_never_crashes_and_skips_youtube_music():
+    """spotDL testet beim Start mit der Suche „a“ – das darf weder abbrechen noch die Ersatzsuche auslösen."""
+    cls, out, calls = make_ytmusic(fail=True), io.StringIO(), []
+    fb = YouTubeFallback(fake_search(calls), out)
+    fb.install(cls)
+    assert fb.connection_check(cls)() is True
+    assert calls == [] and cls.calls == 1  # nur der Test selbst, keine YouTube-Suche nach „a“
+    assert "YouTube Music antwortet nicht" in out.getvalue()
+    # danach gehen alle Songs direkt zu YouTube
+    assert cls().get_results("Maroon 5 - Animals") == ["yt:Maroon 5 - Animals:cookies.txt"]
+    assert cls.calls == 1
+
+
+def test_youtube_search_never_raises(monkeypatch):
+    import sys
+    import types
+
+    class Boom:
+        def __init__(self, opts):
+            raise RuntimeError("Requested format is not available")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=Boom))
+    monkeypatch.setitem(sys.modules, "spotdl", types.ModuleType("spotdl"))
+    monkeypatch.setitem(sys.modules, "spotdl.types", types.ModuleType("spotdl.types"))
+    monkeypatch.setitem(sys.modules, "spotdl.types.result", types.SimpleNamespace(Result=dict))
+    assert youtube_search("a") == []
