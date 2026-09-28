@@ -35,6 +35,8 @@ DEFAULTS: dict[str, Any] = {
     "music_dirs": [],
     # Alle Server-Einstellungen aus settings_schema.py
     **{s.key: s.default for s in SERVER_SETTINGS},
+    # Stand der Konfiguration (für einmalige Anpassungen bei Updates)
+    "config_version": 2,
 }
 
 # Werte, die niemals ans Frontend gehen
@@ -67,6 +69,16 @@ class Config:
                 if "storage_mode" not in stored and self._data["music_dirs"]:
                     first, *rest = self._data["music_dirs"]
                     self._data.update(storage_mode="folder", storage_path=first, music_dirs=rest)
+                if int(stored.get("config_version") or 1) < 2:
+                    # Früherer Standard „MP3, wie die Quelle“ wandelte jeden Download um (Klangverlust).
+                    # Nur wenn nie geändert: auf Opus ohne Umwandlung umstellen.
+                    if stored.get("download_format", "mp3") == "mp3" and stored.get("download_bitrate", "auto") == "auto":
+                        self._data.update(download_format="opus", download_bitrate="disable")
+                    self._data["config_version"] = 2
+                    try:
+                        self.save()
+                    except OSError:
+                        pass
             env_dirs = os.environ.get("HOMIFY_MUSIC_DIRS")
             if env_dirs and self._data["storage_mode"] == "local" and not self._data["storage_path"]:
                 dirs = [d for d in env_dirs.split(os.pathsep) if d]

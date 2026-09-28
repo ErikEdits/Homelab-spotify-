@@ -37,9 +37,14 @@ def _s(key, scope, category, type_, default, label, help_="", **kw) -> Setting:
 QUALITY = [("original", "Original (beste Qualität)"), ("high", "Hoch (bis 320 kbit/s)"),
            ("normal", "Normal (192 kbit/s)"), ("low", "Niedrig (128 kbit/s)"),
            ("minimal", "Datensparend (64 kbit/s)")]
-EQ_PRESETS = [("flat", "Neutral"), ("bass", "Bass-Boost"), ("treble", "Höhen-Boost"), ("vocal", "Stimme"),
-              ("rock", "Rock"), ("pop", "Pop"), ("electronic", "Elektronisch"), ("hiphop", "Hip-Hop"),
-              ("classical", "Klassik"), ("acoustic", "Akustik"), ("loudness", "Loudness (leise hören)"),
+# Dieselbe Auswahl wie im Spotify-Equalizer (gleiche 6 Frequenzen: 60 Hz … 15 kHz)
+EQ_PRESETS = [("flat", "Aus (neutral)"), ("acoustic", "Akustik"), ("bass", "Bass-Booster"),
+              ("bass_reducer", "Bass-Reduzierer"), ("classical", "Klassik"), ("dance", "Dance"),
+              ("deep", "Deep"), ("electronic", "Elektronisch"), ("hiphop", "Hip-Hop"), ("jazz", "Jazz"),
+              ("latin", "Latin"), ("loudness", "Loudness (leise hören)"), ("lounge", "Lounge"),
+              ("piano", "Piano"), ("pop", "Pop"), ("rnb", "R&B"), ("rock", "Rock"),
+              ("small_speakers", "Kleine Lautsprecher"), ("spoken_word", "Gesprochenes Wort"),
+              ("treble", "Höhen-Booster"), ("treble_reducer", "Höhen-Reduzierer"), ("vocal", "Stimmen-Booster"),
               ("custom", "Eigene Einstellung")]
 EQ_BANDS = [("eq_60", "60 Hz"), ("eq_150", "150 Hz"), ("eq_400", "400 Hz"), ("eq_1k", "1 kHz"),
             ("eq_2k4", "2,4 kHz"), ("eq_15k", "15 kHz")]
@@ -186,10 +191,16 @@ SETTINGS: list[Setting] = [
        "Menüpunkt „Datei aufs Gerät laden“."),
 
     # ================================================================ Downloads / spotDL (Server)
-    _s("download_format", "server", "Downloads (spotDL)", "select", "mp3", "Format",
-       "mp3 läuft überall.", options=[(f, f) for f in ("mp3", "m4a", "opus", "flac", "ogg")]),
-    _s("download_bitrate", "server", "Downloads (spotDL)", "select", "auto", "Bitrate",
-       "auto = wie die Quelle.", options=[(b, b) for b in ("auto", "disable", "128k", "192k", "256k", "320k")]),
+    _s("download_format", "server", "Downloads (spotDL)", "select", "opus", "Format",
+       "Opus = Originalton von YouTube Music (bis 160 kbit/s, klingt wie ~256 kbit/s MP3). M4A nimmt die AAC-Spur – "
+       "mit Cookies eines YouTube-Music-Premium-Kontos bis 256 kbit/s. MP3 wird immer umgewandelt und verliert Qualität.",
+       options=[("opus", "Opus – beste Qualität (empfohlen)"), ("m4a", "M4A/AAC – beste Qualität mit YouTube Premium"),
+                ("mp3", "MP3 – läuft überall, aber umgewandelt"), ("flac", "FLAC (umgewandelt, nur größer)"),
+                ("ogg", "Ogg Vorbis (umgewandelt)")]),
+    _s("download_bitrate", "server", "Downloads (spotDL)", "select", "disable", "Bitrate",
+       "„Original“ übernimmt den Ton ohne Umwandlung, wenn das Format passt (Opus/M4A) – jede Umwandlung kostet Klang.",
+       options=[("disable", "Original – nicht umwandeln (empfohlen)"), ("auto", "Wie die Quelle (umgewandelt)"),
+                ("128k", "128 kbit/s"), ("192k", "192 kbit/s"), ("256k", "256 kbit/s"), ("320k", "320 kbit/s")]),
     _s("download_threads", "server", "Downloads (spotDL)", "int", 2, "Gleichzeitige Downloads (Threads)",
        min=1, max=8, step=1),
     _s("output_template", "server", "Downloads (spotDL)", "text",
@@ -253,18 +264,30 @@ USER_SETTINGS = [s for s in SETTINGS if s.scope == "user"]
 SERVER_SETTINGS = [s for s in SETTINGS if s.scope == "server"]
 SECRET_KEYS = {s.key for s in SETTINGS if s.type == "password"}
 
+# Kurven der klassischen Equalizer-Presets (wie bei Spotify), umgerechnet auf 60/150/400/1k/2,4k/15k Hz
 EQ_PRESET_VALUES: dict[str, list[int]] = {
     "flat": [0, 0, 0, 0, 0, 0],
-    "bass": [6, 4, 1, 0, 0, 0],
-    "treble": [0, 0, 0, 1, 4, 6],
-    "vocal": [-2, -1, 2, 4, 3, 0],
-    "rock": [4, 2, -1, 1, 3, 4],
-    "pop": [-1, 2, 4, 3, 0, -1],
-    "electronic": [5, 3, 0, -1, 2, 4],
-    "hiphop": [5, 4, 0, 1, 1, 2],
-    "classical": [3, 2, -1, 0, 2, 3],
-    "acoustic": [3, 1, 1, 2, 3, 2],
-    "loudness": [6, 3, 0, 0, 2, 5],
+    "acoustic": [5, 3, 1, 2, 4, 2],
+    "bass": [5, 3, 1, 0, 0, 0],
+    "bass_reducer": [-5, -3, -1, 0, 0, 0],
+    "classical": [4, 3, 0, -2, 1, 3],
+    "dance": [5, 4, 1, 4, 5, 1],
+    "deep": [4, 1, 2, 2, 1, -4],
+    "electronic": [4, 1, -1, 2, 1, 5],
+    "hiphop": [4, 2, 0, -1, 1, 3],
+    "jazz": [3, 2, 0, -2, 0, 3],
+    "latin": [4, 0, -1, -2, -1, 4],
+    "loudness": [5, 0, -1, 0, -2, 2],
+    "lounge": [-2, 0, 3, 2, 0, 1],
+    "piano": [2, 1, 3, 2, 4, 3],
+    "pop": [-1, 1, 3, 4, 1, -1],
+    "rnb": [5, 5, -1, -2, 2, 4],
+    "rock": [4, 3, 0, -1, 1, 4],
+    "small_speakers": [5, 3, 1, 0, -1, -4],
+    "spoken_word": [-2, 0, 3, 5, 5, 0],
+    "treble": [0, 0, 0, 1, 3, 5],
+    "treble_reducer": [0, 0, 0, -1, -3, -5],
+    "vocal": [-2, -2, 3, 4, 3, -1],
 }
 
 

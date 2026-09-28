@@ -79,7 +79,7 @@ Gruppe. Geänderte Werte sind markiert und lassen sich mit ↺ auf den Standard 
 | Gruppe | Was du einstellen kannst |
 |---|---|
 | Wiedergabe (15) | Qualität im WLAN und bei mobilen Daten, Überblenden (0–12 s), lückenlose Wiedergabe, Autoplay, Lautstärke angleichen (pro Song/Album, leise/normal/laut), sanft pausieren, Geschwindigkeit, letzte Warteschlange wiederherstellen, „Zurück“-Verhalten, Sprungweite, ab wann ein Song als gehört zählt, private Sitzung, intelligenter Zufall |
-| Equalizer (8) | Ein/Aus, 11 Voreinstellungen (Bass, Rock, Pop, Klassik …), 6 Regler von 60 Hz bis 15 kHz |
+| Equalizer (8) | Ein/Aus, 21 Presets wie bei Spotify (Bass-Booster, Dance, Deep, Hip-Hop, R&B, Rock, Kleine Lautsprecher, Stimmen-Booster …) als Knöpfe, 6 Regler auf denselben Frequenzen wie Spotify (60 Hz bis 15 kHz), Limiter gegen Übersteuern |
 | Aussehen (15) | Design (Dunkel, Schwarz/AMOLED, Gedämpft), 8 Akzentfarben, Farben aus dem Cover, Größe der Oberfläche (85–140 %), Kachelgröße, kompakte Listen, Cover/Album-Spalte in Listen, Animationen, Startseite beim Öffnen, Abspielen mit einem Klick, Restzeit, Nachfragen vor dem Löschen, Tastenkürzel, Songtext-Knopf |
 | Startseite (9) | Jede Reihe einzeln ein-/ausblenden, Einträge pro Reihe |
 | Suche & Bibliothek (7) | Spotify-Vorschläge automatisch oder per Knopf, vorhandene Songs ausblenden, Start-Tab und Sortierung der Bibliothek, geholte Songs automatisch liken, Songs pro Mix |
@@ -211,6 +211,11 @@ Gut zu wissen:
   *Einstellungen → Downloads (spotDL) → YouTube-Cookies → Cookie-Datei hochladen* auswählen. Homify
   behält nur die YouTube-Cookies und bietet an, fehlgeschlagene Downloads neu zu starten. Kommt die
   Meldung später wieder, sind die Cookies abgelaufen – einfach neu hochladen.
+- **Klangqualität:** Standard ist *Format Opus* + *Bitrate „Original“* – der Ton von YouTube Music wird
+  ohne Umwandlung übernommen (bis 160 kbit/s Opus, klingt etwa wie 256 kbit/s MP3). Mit Cookies eines
+  **YouTube-Music-Premium**-Kontos und *Format M4A* sogar 256 kbit/s AAC. MP3 wird immer umgewandelt und
+  verliert Qualität. Ältere Installationen mit dem früheren Standard „MP3“ werden beim Update automatisch
+  umgestellt (bewusst gewählte Formate bleiben).
 - spotDL-Updates (Knopf oder wöchentlich automatisch) holen auch das neueste yt-dlp – die häufigste
   Lösung, wenn Downloads plötzlich scheitern.
 - Bitte nur für Musik nutzen, die du privat nutzen darfst.
