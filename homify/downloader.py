@@ -35,7 +35,7 @@ FRIENDLY_ERRORS = [
     (re.compile(r"No results found|LookupError", re.I),
      "Kein passender Song auf YouTube Music gefunden."),
     (re.compile(r"Sign in to confirm|not a bot|cookies", re.I),
-     "YouTube verlangt eine Bestätigung. Tipp: Cookie-Datei in den Einstellungen hinterlegen."),
+     "YouTube verlangt eine Bestätigung. Lösung: Einstellungen → Downloads (spotDL) → „YouTube-Cookies“ hochladen."),
     (re.compile(r"rate.?limit|request limit|429", re.I),
      "Spotify-Limit erreicht – später nochmal versuchen oder eigene Spotify-API-Daten eintragen."),
     (re.compile(r"ProxyError|ConnectionError|Max retries|NameResolution|getaddrinfo|timed out", re.I),
@@ -49,6 +49,9 @@ FRIENDLY_ERRORS = [
 def friendly_error(message: str) -> str:
     for pattern, text in FRIENDLY_ERRORS:
         if pattern.search(message):
+            if pattern is FRIENDLY_ERRORS[1][0] and (config.get("spotdl_cookie_file") or "").strip():
+                text = ("YouTube verlangt eine Bestätigung, obwohl Cookies hinterlegt sind – sie sind wohl "
+                        "abgelaufen. Bitte neu exportieren und unter Einstellungen → Downloads hochladen.")
             return f"{text} ({message[:200]})"
     return message
 RE_PROCESSING = re.compile(r"Processing query: (.+)")

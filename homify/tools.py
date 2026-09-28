@@ -94,7 +94,9 @@ class ToolManager:
             self._run([py, "-m", "pip", "install", "--upgrade", "pip"], timeout=600)
             pip_cmd = [py, "-m", "pip", "install", "spotdl"]
             if upgrade:
-                pip_cmd.insert(4, "--upgrade")
+                # „eager“: auch yt-dlp und ytmusicapi auf den neuesten passenden Stand – YouTube ändert
+                # häufig etwas, und ein altes yt-dlp ist der häufigste Grund für fehlgeschlagene Downloads
+                pip_cmd[4:4] = ["--upgrade", "--upgrade-strategy", "eager"]
             if self._run(pip_cmd) != 0:
                 raise RuntimeError("pip install spotdl fehlgeschlagen")
             self._emit("Lade Deno (wird von yt-dlp für YouTube benötigt) …")

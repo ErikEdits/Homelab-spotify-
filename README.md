@@ -194,8 +194,13 @@ Wiedergabe-Knöpfe in der Taskleisten-Vorschau.
 Gut zu wissen:
 - spotDL holt die Infos von Spotify und das Audio von YouTube Music (meist ~128–256 kbit/s).
 - Scheitern Downloads plötzlich: **Einstellungen → Downloads → spotDL aktualisieren**.
-- Meldet YouTube „Bestätige, dass du kein Bot bist“: `cookies.txt` exportieren und als
-  Cookie-Datei eintragen.
+- Meldet YouTube „Bestätige, dass du kein Bot bist“: im Browser bei youtube.com angemeldet mit der
+  Erweiterung „Get cookies.txt LOCALLY“ → „Export All Cookies“ eine `cookies.txt` speichern und unter
+  *Einstellungen → Downloads (spotDL) → YouTube-Cookies → Cookie-Datei hochladen* auswählen. Homify
+  behält nur die YouTube-Cookies und bietet an, fehlgeschlagene Downloads neu zu starten. Kommt die
+  Meldung später wieder, sind die Cookies abgelaufen – einfach neu hochladen.
+- spotDL-Updates (Knopf oder wöchentlich automatisch) holen auch das neueste yt-dlp – die häufigste
+  Lösung, wenn Downloads plötzlich scheitern.
 - Bitte nur für Musik nutzen, die du privat nutzen darfst.
 
 ## Tastenkürzel (Website & Windows-App)
