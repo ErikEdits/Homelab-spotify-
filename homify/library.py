@@ -14,7 +14,7 @@ from .textutil import norm
 TRACK_COLS = (
     "t.id, t.title, t.artist, t.artists, t.album, t.album_id, t.album_artist, t.track_no, t.disc_no, "
     "t.year, t.genre, t.duration, t.codec, t.mime, t.bitrate, t.sample_rate, t.cover_id, t.added_at, "
-    "t.spotify_id, t.gain, t.album_gain"
+    "t.spotify_id, t.gain, t.album_gain, t.peak, t.lead_in, t.tail"
 )
 
 
@@ -27,6 +27,12 @@ def tracks_json(rows: list[dict[str, Any]], user_id: int | None) -> list[dict[st
     ids = [r["id"] for r in rows]
     liked: set[str] = set()
     artist_map: dict[str, list[dict[str, str]]] = {}
+    album_level: dict[str, dict[str, Any]] = {}
+    album_ids = list({r["album_id"] for r in rows if r.get("album_id")})
+    for chunk in _chunks(album_ids):
+        marks = ",".join("?" * len(chunk))
+        for r in db.query(f"SELECT album_id, gain, peak FROM album_loudness WHERE album_id IN ({marks})", chunk):
+            album_level[r["album_id"]] = r
     if ids:
         for chunk in _chunks(list(set(ids))):
             marks = ",".join("?" * len(chunk))
@@ -50,7 +56,12 @@ def tracks_json(rows: list[dict[str, Any]], user_id: int | None) -> list[dict[st
             "track_no": r["track_no"], "disc_no": r["disc_no"], "year": r["year"], "genre": r["genre"],
             "duration": r["duration"], "codec": r["codec"], "mime": r["mime"], "bitrate": r["bitrate"],
             "sample_rate": r["sample_rate"], "cover": r["cover_id"], "added_at": r["added_at"],
-            "gain": r.get("gain"), "album_gain": r.get("album_gain"),
+            # Klang: ReplayGain aus den Tags, sonst gemessen; Spitzen und Stille für den Player
+            "gain": r.get("gain"),
+            "album_gain": r.get("album_gain") if r.get("album_gain") is not None
+            else album_level.get(r["album_id"], {}).get("gain"),
+            "peak": r.get("peak"), "album_peak": album_level.get(r["album_id"], {}).get("peak"),
+            "lead_in": r.get("lead_in"), "tail": r.get("tail"),
             "liked": r["id"] in liked,
         }
         for extra in ("entry_id", "entry_added", "played_at", "liked_at", "plays"):

@@ -75,10 +75,12 @@ export async function setLiked(trackId, liked) {
   emit("like", { id: trackId, liked });
 }
 
-export function streamUrl(track, { transcode = false, quality = "original" } = {}) {
+export function streamUrl(track, { transcode = false, quality = "original", opus = false } = {}) {
   const params = new URLSearchParams();
   if (transcode) params.set("transcode", "1");
   if (quality && quality !== "original") params.set("quality", quality);
+  // Gerät kann Opus: bei niedrigen Bitraten wandelt der Server dann in Opus statt MP3 um (klingt besser)
+  if (opus && (transcode || (quality && quality !== "original"))) params.set("opus", "1");
   const qs = params.toString();
   return `/api/tracks/${encodeURIComponent(track.id)}/stream${qs ? "?" + qs : ""}`;
 }

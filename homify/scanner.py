@@ -270,11 +270,15 @@ class Scanner:
         cols = list(rows[0].keys())
         cols.remove("_artists")
         placeholders = ",".join("?" * len(cols))
-        # Gemessene Lautheit nicht mit „leer“ überschreiben
+        # Gemessene Lautheit nicht mit „leer“ überschreiben – außer die Datei selbst hat sich geändert,
+        # dann wird alles neu gemessen
+        changed = "(excluded.size != tracks.size OR ABS(excluded.mtime - tracks.mtime) > 1)"
         updates = ",".join(
-            f"{c}=COALESCE(excluded.{c}, tracks.{c})" if c in ("gain", "album_gain") else f"{c}=excluded.{c}"
+            f"{c}=CASE WHEN {changed} THEN excluded.{c} ELSE COALESCE(excluded.{c}, tracks.{c}) END"
+            if c in ("gain", "album_gain") else f"{c}=excluded.{c}"
             for c in cols if c not in ("id", "added_at")
         )
+        updates += f", analyzed=CASE WHEN {changed} THEN 0 ELSE tracks.analyzed END"
         sql = (
             f"INSERT INTO tracks ({','.join(cols)}) VALUES ({placeholders}) "
             f"ON CONFLICT(id) DO UPDATE SET {updates}"
